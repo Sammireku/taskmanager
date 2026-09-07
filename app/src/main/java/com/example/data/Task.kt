@@ -30,8 +30,13 @@ data class Task(
     val longitude: Double? = null,
     val geofenceRadius: Float = 150f, // in meters
     val triggerDirection: String = "ARRIVAL", // "ARRIVAL" or "DEPARTURE"
-    val reminderTone: String? = "DEFAULT" // "DEFAULT", "URGENT_ALARM", "GENTLE_NOTIF", "PHONE_RINGTONE", "CHIME", "BEACON"
+    val reminderTone: String? = "DEFAULT", // "DEFAULT", "URGENT_ALARM", "GENTLE_NOTIF", "PHONE_RINGTONE", "CHIME", "BEACON"
+    val isDeleted: Boolean = false,
+    val deletedAt: Long? = null
 ) {
+    val isSoftDeleted: Boolean
+        get() = isDeleted || (deletedAt != null && deletedAt!! > 0)
+
     val isDone: Boolean
         get() = isCompleted || completionStatus == "COMPLETED" || safeStatus == "COMPLETED"
 

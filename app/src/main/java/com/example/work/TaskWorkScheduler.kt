@@ -100,4 +100,20 @@ class TaskWorkScheduler(private val context: Context) {
         workManager.enqueue(testWorkRequest)
         Log.d(TAG, "Enqueued immediate test WorkManager notification for task #${task.id}")
     }
+
+    /**
+     * Schedules periodic background purging of soft-deleted tasks older than 30 days.
+     */
+    fun schedulePeriodicTrashPurge() {
+        val purgeRequest = androidx.work.PeriodicWorkRequestBuilder<TrashPurgeWorker>(
+            24, TimeUnit.HOURS
+        ).addTag("trash_purge_job").build()
+
+        workManager.enqueueUniquePeriodicWork(
+            "trash_30day_purge_work",
+            androidx.work.ExistingPeriodicWorkPolicy.KEEP,
+            purgeRequest
+        )
+        Log.d(TAG, "Enqueued periodic 24h background trash purge work")
+    }
 }

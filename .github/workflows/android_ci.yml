@@ -1,0 +1,44 @@
+name: Android CI & Security Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build_and_verify:
+    name: Build, Lint, Test & API Key Security Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Check for Hardcoded API Key Exposure
+        run: |
+          echo "Scanning codebase for exposed API keys..."
+          FOUND_KEYS=$(grep -rE "AIzaSy[A-Za-z0-9_-]{33}|AIza[0-9A-Za-z-_]{35}" --exclude-dir={.git,.gradle,build} . || true)
+          if [ -n "$FOUND_KEYS" ]; then
+            echo "::error::API key detected in source code:"
+            echo "$FOUND_KEYS"
+            exit 1
+          else
+            echo "No exposed API keys found!"
+          fi
+
+      - name: Run Unit Tests
+        run: gradle testDebugUnitTest --no-daemon
+
+      - name: Run Android Lint
+        run: gradle lintDebug --no-daemon || true
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon

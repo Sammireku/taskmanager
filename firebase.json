@@ -1,0 +1,19 @@
+{
+  "functions": {
+    "source": "functions",
+    "codeIgnore": [
+      ".git",
+      "firebase-debug.log",
+      "firebase-debug.*.log",
+      "node_modules"
+    ]
+  },
+  "emulators": {
+    "functions": {
+      "port": 5001
+    },
+    "ui": {
+      "enabled": true
+    }
+  }
+}

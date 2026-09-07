@@ -1,6 +1,9 @@
 package com.example.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -27,6 +30,7 @@ import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FlightLand
 import androidx.compose.material.icons.filled.FlightTakeoff
 import androidx.compose.material.icons.filled.LightMode
@@ -37,6 +41,7 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
@@ -92,7 +97,11 @@ fun HomeScreen(
     val themeMode by viewModel.themeMode.collectAsState()
     val dynamicColorEnabled by viewModel.dynamicColorEnabled.collectAsState()
     val swipeToDeleteEnabled by viewModel.swipeToDeleteEnabled.collectAsState()
+    val isTtsEnabled by viewModel.isTtsEnabled.collectAsState()
+    val trashTasks by viewModel.trashTasks.collectAsState()
     var showThemeMenu by remember { mutableStateOf(false) }
+    var showBackupRestoreDialog by remember { mutableStateOf(false) }
+    var showTrashDialog by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     var hasLocationPermission by remember {
@@ -308,6 +317,53 @@ fun HomeScreen(
                                     onClick = { viewModel.toggleSwipeToDelete() },
                                     leadingIcon = {
                                         Icon(Icons.Default.Delete, contentDescription = null)
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column {
+                                                Text("Voice Output (TTS)")
+                                                Text("Cobby speaks responses aloud", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Switch(
+                                                checked = isTtsEnabled,
+                                                onCheckedChange = { viewModel.toggleTts() },
+                                                modifier = Modifier.scale(0.8f)
+                                            )
+                                        }
+                                    },
+                                    onClick = { viewModel.toggleTts() },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.RecordVoiceOver, contentDescription = null)
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("📁 Backup & Restore (JSON)") },
+                                    onClick = {
+                                        showBackupRestoreDialog = true
+                                        showThemeMenu = false
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.FileDownload, contentDescription = null)
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("🗑️ Trash Bin (${trashTasks.size})") },
+                                    onClick = {
+                                        showTrashDialog = true
+                                        showThemeMenu = false
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                                     }
                                 )
                                 HorizontalDivider()
@@ -903,6 +959,175 @@ fun HomeScreen(
                         snackbarHostState.showSnackbar(
                             message = "Added \"${newTask.safeTitle}\" to Room DB!"
                         )
+                    }
+                }
+            )
+        }
+
+        // Backup and Restore (JSON) Dialog
+        if (showBackupRestoreDialog) {
+            var exportJsonText by remember { mutableStateOf("") }
+            var importJsonText by remember { mutableStateOf("") }
+            var activeTab by remember { mutableStateOf(0) }
+            var statusMessage by remember { mutableStateOf("") }
+
+            LaunchedEffect(showBackupRestoreDialog) {
+                exportJsonText = viewModel.exportTasksToJson()
+            }
+
+            AlertDialog(
+                onDismissRequest = { showBackupRestoreDialog = false },
+                title = { Text("Backup & Restore (JSON)") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        TabRow(selectedTabIndex = activeTab) {
+                            Tab(
+                                selected = activeTab == 0,
+                                onClick = { activeTab = 0 },
+                                text = { Text("Export") }
+                            )
+                            Tab(
+                                selected = activeTab == 1,
+                                onClick = { activeTab = 1 },
+                                text = { Text("Import") }
+                            )
+                        }
+
+                        if (activeTab == 0) {
+                            Text("Copy your local tasks JSON backup:", style = MaterialTheme.typography.bodySmall)
+                            OutlinedTextField(
+                                value = exportJsonText,
+                                onValueChange = {},
+                                readOnly = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(160.dp),
+                                textStyle = MaterialTheme.typography.bodySmall
+                            )
+                            Button(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("Tasks Backup JSON", exportJsonText)
+                                    clipboard.setPrimaryClip(clip)
+                                    statusMessage = "Copied JSON backup to clipboard!"
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("📋 Copy to Clipboard")
+                            }
+                        } else {
+                            Text("Paste tasks JSON backup to restore into Room DB:", style = MaterialTheme.typography.bodySmall)
+                            OutlinedTextField(
+                                value = importJsonText,
+                                onValueChange = { importJsonText = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(160.dp),
+                                placeholder = { Text("[{\"title\": \"Task 1\", ...}]") },
+                                textStyle = MaterialTheme.typography.bodySmall
+                            )
+                            Button(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        val count = viewModel.importTasksFromJson(importJsonText)
+                                        statusMessage = "Imported $count tasks into Room DB!"
+                                    }
+                                },
+                                enabled = importJsonText.isNotBlank(),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("📥 Restore Tasks")
+                            }
+                        }
+                        if (statusMessage.isNotBlank()) {
+                            Text(statusMessage, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showBackupRestoreDialog = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
+
+        // Trash Bin (30-day Retention Buffer) Dialog
+        if (showTrashDialog) {
+            AlertDialog(
+                onDismissRequest = { showTrashDialog = false },
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Trash Bin (${trashTasks.size})")
+                        if (trashTasks.isNotEmpty()) {
+                            TextButton(onClick = { viewModel.emptyTrash() }) {
+                                Text("Empty Trash", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Tasks in Trash are kept for 30 days before being permanently purged.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (trashTasks.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("Trash is empty! ✨", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 280.dp)
+                            ) {
+                                items(trashTasks, key = { it.id }) { task ->
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(task.safeTitle, style = MaterialTheme.typography.titleMedium)
+                                                if (task.deletedAt != null) {
+                                                    val dateStr = java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault()).format(java.util.Date(task.deletedAt!!))
+                                                    Text("Deleted: $dateStr", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                            }
+                                            Button(
+                                                onClick = { viewModel.restoreTask(task) },
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("Restore")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showTrashDialog = false }) {
+                        Text("Close")
                     }
                 }
             )

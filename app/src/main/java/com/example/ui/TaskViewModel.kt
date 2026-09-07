@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.content.Context
 import android.location.Location
+import android.speech.tts.TextToSpeech
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppDatabase
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import java.util.Calendar
+import java.util.Locale
 
 import com.example.places.PlacesService
 import com.example.places.PlaceSuggestion
@@ -42,9 +44,9 @@ enum class CobbyMood {
 }
 
 enum class SyncStatus(val label: String) {
-    OFFLINE_ROOM("Offline (Room DB)"),
-    SYNCING("Syncing..."),
-    SYNCED("Synced")
+    OFFLINE_ROOM("Offline Local Persistence (Room DB)"),
+    SYNCING("Refreshing Local DB..."),
+    SYNCED("Local DB Active")
 }
 
 class TaskViewModel(
@@ -57,6 +59,63 @@ class TaskViewModel(
     val placesService = PlacesService(context.applicationContext)
     val alarmScheduler = TaskAlarmScheduler(context.applicationContext)
     val workScheduler = TaskWorkScheduler(context.applicationContext)
+    val firestoreRepository = com.example.data.FirestoreRepository()
+
+    private var tts: TextToSpeech? = null
+    var isTtsEnabled = MutableStateFlow(true)
+        private set
+
+    private var firestoreListener: com.google.firebase.firestore.ListenerRegistration? = null
+
+    init {
+        try {
+            tts = TextToSpeech(context.applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    tts?.language = Locale.US
+                }
+            }
+        } catch (e: Exception) {
+            // TTS engine unavailable
+        }
+        viewModelScope.launch {
+            val thirtyDaysAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
+            db.taskDao().purgeOldTrash(thirtyDaysAgo)
+            workScheduler.schedulePeriodicTrashPurge()
+        }
+
+        try {
+            firestoreListener = firestoreRepository.listenToUserTasks { remoteTasks ->
+                viewModelScope.launch {
+                    for (task in remoteTasks) {
+                        db.taskDao().insertTask(task)
+                    }
+                    TaskWidgetProvider.updateAllWidgets(context)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    fun toggleTts() {
+        isTtsEnabled.value = !isTtsEnabled.value
+    }
+
+    fun speakText(text: String) {
+        if (isTtsEnabled.value && text.isNotBlank()) {
+            val clean = text.replace(Regex("[^\u0000-\u007F]"), "").trim()
+            if (clean.isNotBlank()) {
+                tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "CobbySpeech")
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        try {
+            firestoreListener?.remove()
+            tts?.stop()
+            tts?.shutdown()
+        } catch (_: Exception) {}
+    }
 
     // Animated Cobby Character reactive states
     private val _cobbyMood = MutableStateFlow(CobbyMood.IDLE)
@@ -88,6 +147,9 @@ class TaskViewModel(
     val isSuggestingSchedule = MutableStateFlow(false)
 
     val allTasks: StateFlow<List<Task>> = db.taskDao().getAllTasks()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val trashTasks: StateFlow<List<Task>> = db.taskDao().getTrashTasks()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val searchQuery = MutableStateFlow("")
@@ -201,15 +263,109 @@ class TaskViewModel(
         viewModelScope.launch {
             _syncStatus.value = SyncStatus.SYNCING
             try {
-                // Simulate/trigger bidirectional sync between Room offline cache and backend
-                delay(1200)
+                val localTasks = db.taskDao().getAllTasksList()
+                val remoteTasks = firestoreRepository.syncTasks(localTasks)
+                for (r in remoteTasks) {
+                    db.taskDao().insertTask(r)
+                }
                 _syncStatus.value = SyncStatus.SYNCED
+                val msg = "Firestore synchronized! ${remoteTasks.size} tasks in sync with cloud."
+                _cobbySpeech.value = msg
+                speakText(msg)
                 delay(2500)
                 _syncStatus.value = SyncStatus.OFFLINE_ROOM
             } catch (e: Exception) {
                 _syncStatus.value = SyncStatus.OFFLINE_ROOM
+                val msg = "Sync attempt saved locally: ${e.message ?: "Offline"}"
+                _cobbySpeech.value = msg
             }
         }
+    }
+
+    private fun calculateNextDueDate(currentDueDate: Long?, frequency: String?): Long {
+        val cal = Calendar.getInstance()
+        if (currentDueDate != null && currentDueDate > 0) {
+            cal.timeInMillis = currentDueDate
+        }
+        when (frequency?.lowercase()) {
+            "daily" -> cal.add(Calendar.DAY_OF_YEAR, 1)
+            "weekly" -> cal.add(Calendar.DAY_OF_YEAR, 7)
+            "weekdays" -> {
+                do {
+                    cal.add(Calendar.DAY_OF_YEAR, 1)
+                } while (cal.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY || cal.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY)
+            }
+            "monthly" -> cal.add(Calendar.MONTH, 1)
+            else -> cal.add(Calendar.DAY_OF_YEAR, 1)
+        }
+        return cal.timeInMillis
+    }
+
+    suspend fun exportTasksToJson(): String {
+        val allTasks = db.taskDao().getAllTasksList()
+        val jsonArray = org.json.JSONArray()
+        for (t in allTasks) {
+            val obj = org.json.JSONObject().apply {
+                put("id", t.id)
+                put("title", t.safeTitle)
+                put("description", t.description.orEmpty())
+                put("priority", t.safePriority)
+                put("dueDate", t.dueDate ?: 0L)
+                put("completionStatus", t.completionStatus)
+                put("isHabit", t.isHabit)
+                put("habitFrequency", t.habitFrequency.orEmpty())
+                put("isCompleted", t.isDone)
+                put("category", t.safeCategory)
+                put("subtasksJson", t.subtasksJson.orEmpty())
+                put("locationName", t.locationName.orEmpty())
+                put("latitude", t.latitude ?: 0.0)
+                put("longitude", t.longitude ?: 0.0)
+                put("reminderTone", t.safeReminderTone)
+            }
+            jsonArray.put(obj)
+        }
+        return jsonArray.toString(2)
+    }
+
+    suspend fun importTasksFromJson(jsonString: String): Int {
+        var count = 0
+        try {
+            val jsonArray = org.json.JSONArray(jsonString)
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                val importedTask = Task(
+                    title = obj.optString("title", "Imported Task"),
+                    description = obj.optString("description").ifBlank { null },
+                    priority = obj.optString("priority", "Medium"),
+                    dueDate = if (obj.has("dueDate") && obj.getLong("dueDate") > 0) obj.getLong("dueDate") else null,
+                    completionStatus = obj.optString("completionStatus", "PENDING"),
+                    status = obj.optString("completionStatus", "PENDING"),
+                    isHabit = obj.optBoolean("isHabit", false),
+                    habitFrequency = obj.optString("habitFrequency").ifBlank { null },
+                    isCompleted = obj.optBoolean("isCompleted", false),
+                    category = obj.optString("category").ifBlank { null },
+                    subtasksJson = obj.optString("subtasksJson").ifBlank { null },
+                    locationName = obj.optString("locationName").ifBlank { null },
+                    latitude = if (obj.has("latitude") && obj.getDouble("latitude") != 0.0) obj.getDouble("latitude") else null,
+                    longitude = if (obj.has("longitude") && obj.getDouble("longitude") != 0.0) obj.getDouble("longitude") else null,
+                    reminderTone = obj.optString("reminderTone", "DEFAULT")
+                )
+                val newId = db.taskDao().insertTask(importedTask)
+                val savedTask = importedTask.copy(id = newId.toInt())
+                workScheduler.scheduleDueDateReminder(savedTask)
+                alarmScheduler.scheduleTaskAlarm(savedTask)
+                count++
+            }
+            TaskWidgetProvider.updateAllWidgets(context)
+            val msg = "Successfully imported $count tasks from backup JSON!"
+            _cobbySpeech.value = msg
+            speakText(msg)
+        } catch (e: Exception) {
+            val msg = "Failed to import JSON: ${e.message}"
+            _cobbySpeech.value = msg
+            speakText("Failed to import JSON")
+        }
+        return count
     }
 
     fun refreshLocation() {
@@ -249,6 +405,7 @@ class TaskViewModel(
 
     fun setCobbySpeech(text: String) {
         _cobbySpeech.value = text
+        speakText(text)
     }
 
     fun onCobbyCharacterClicked() {
@@ -260,7 +417,9 @@ class TaskViewModel(
             "Small daily progress equals massive long-term results! 💪",
             "You're doing great! Keep knocking out those goals!"
         )
-        _cobbySpeech.value = quotes.random()
+        val selected = quotes.random()
+        _cobbySpeech.value = selected
+        speakText(selected)
         _cobbyMood.value = CobbyMood.TALKING
         viewModelScope.launch {
             delay(3500)
@@ -271,7 +430,9 @@ class TaskViewModel(
     }
 
     fun reactToTaskAdded(task: Task) {
-        _cobbySpeech.value = "Awesome! Scheduled \"${task.safeTitle}\" with WorkManager reminders! 🚀"
+        val msg = "Awesome! Scheduled \"${task.safeTitle}\" with WorkManager reminders! 🚀"
+        _cobbySpeech.value = msg
+        speakText(msg)
         _cobbyMood.value = CobbyMood.EXCITED
         viewModelScope.launch {
             delay(3500)
@@ -280,7 +441,9 @@ class TaskViewModel(
     }
 
     fun reactToTaskCompleted(task: Task) {
-        _cobbySpeech.value = "Woohoo! \"${task.safeTitle}\" completed! High five! 🎉"
+        val msg = "Woohoo! \"${task.safeTitle}\" completed! High five! 🎉"
+        _cobbySpeech.value = msg
+        speakText(msg)
         _cobbyMood.value = CobbyMood.CELEBRATING
         viewModelScope.launch {
             delay(4500)
@@ -289,7 +452,9 @@ class TaskViewModel(
     }
 
     fun reactToTaskDeleted(task: Task) {
-        _cobbySpeech.value = "Removed \"${task.safeTitle}\". Focused and clear!"
+        val msg = "Removed \"${task.safeTitle}\". Focused and clear!"
+        _cobbySpeech.value = msg
+        speakText(msg)
         viewModelScope.launch {
             delay(2500)
             _cobbySpeech.value = "Hey! What should we tackle next?"
@@ -372,7 +537,31 @@ class TaskViewModel(
                 workScheduler.cancelDueDateReminder(task.id)
                 alarmScheduler.cancelTaskAlarm(task.id)
                 geofenceManager.removeTaskGeofence(task.id)
-                reactToTaskCompleted(updated)
+
+                if (task.isHabit) {
+                    val nextDueDate = calculateNextDueDate(task.dueDate, task.habitFrequency)
+                    val nextOccurrence = task.copy(
+                        id = 0,
+                        dueDate = nextDueDate,
+                        isCompleted = false,
+                        completionStatus = "PENDING",
+                        status = "PENDING"
+                    )
+                    val newId = db.taskDao().insertTask(nextOccurrence)
+                    val savedNext = nextOccurrence.copy(id = newId.toInt())
+                    workScheduler.scheduleDueDateReminder(savedNext)
+                    alarmScheduler.scheduleTaskAlarm(savedNext)
+                    if (savedNext.latitude != null && savedNext.longitude != null) {
+                        geofenceManager.registerTaskGeofence(savedNext)
+                    }
+                    val dateFormatted = java.text.SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(java.util.Date(nextDueDate))
+                    val speechMsg = "Habit \"${task.safeTitle}\" done! Next ${task.habitFrequency ?: "Daily"} scheduled for $dateFormatted 🔄"
+                    _cobbySpeech.value = speechMsg
+                    speakText(speechMsg)
+                    _cobbyMood.value = CobbyMood.CELEBRATING
+                } else {
+                    reactToTaskCompleted(updated)
+                }
             } else {
                 workScheduler.scheduleDueDateReminder(updated)
                 alarmScheduler.scheduleTaskAlarm(updated)
@@ -387,28 +576,49 @@ class TaskViewModel(
     fun deleteTask(task: Task) {
         viewModelScope.launch {
             lastDeletedTask = task
+            val timestamp = System.currentTimeMillis()
             workScheduler.cancelDueDateReminder(task.id)
             alarmScheduler.cancelTaskAlarm(task.id)
             geofenceManager.removeTaskGeofence(task.id)
-            db.taskDao().deleteTask(task)
+            db.taskDao().softDeleteTask(task.id, timestamp)
+            firestoreRepository.saveTask(task.copy(isDeleted = true, deletedAt = timestamp))
             TaskWidgetProvider.updateAllWidgets(context)
-            reactToTaskDeleted(task)
+            val msg = "Moved \"${task.safeTitle}\" to Trash! (30-day retention buffer)"
+            _cobbySpeech.value = msg
+            speakText(msg)
+        }
+    }
+
+    fun restoreTask(task: Task) {
+        viewModelScope.launch {
+            db.taskDao().restoreTask(task.id)
+            firestoreRepository.saveTask(task.copy(isDeleted = false, deletedAt = null))
+            workScheduler.scheduleDueDateReminder(task)
+            alarmScheduler.scheduleTaskAlarm(task)
+            if (task.latitude != null && task.longitude != null) {
+                geofenceManager.registerTaskGeofence(task)
+            }
+            TaskWidgetProvider.updateAllWidgets(context)
+            val msg = "Restored \"${task.safeTitle}\" from Trash!"
+            _cobbySpeech.value = msg
+            speakText(msg)
+        }
+    }
+
+    fun emptyTrash() {
+        viewModelScope.launch {
+            db.taskDao().emptyTrash()
+            val msg = "Emptied Trash bin!"
+            _cobbySpeech.value = msg
+            speakText(msg)
         }
     }
 
     fun restoreLastDeletedTask() {
         viewModelScope.launch {
             lastDeletedTask?.let {
-                val id = db.taskDao().insertTask(it)
-                val restoredTask = it.copy(id = id.toInt())
-                workScheduler.scheduleDueDateReminder(restoredTask)
-                alarmScheduler.scheduleTaskAlarm(restoredTask)
-                if (it.latitude != null && it.longitude != null && !it.isCompleted) {
-                    geofenceManager.registerTaskGeofence(restoredTask)
-                }
+                restoreTask(it)
                 lastDeletedTask = null
-                TaskWidgetProvider.updateAllWidgets(context)
-                reactToTaskAdded(restoredTask)
             }
         }
     }
