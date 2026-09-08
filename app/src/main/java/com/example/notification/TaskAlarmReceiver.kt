@@ -119,18 +119,63 @@ class TaskAlarmReceiver : BroadcastReceiver() {
             }
         }
 
-        // Active Ringtone audio playback on device speaker
-        try {
-            val ringtone = RingtoneManager.getRingtone(context, soundUri)
-            if (ringtone != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ringtone.isLooping = false
-                }
-                ringtone.play()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to play audio ringtone: ${e.message}")
+        // Start continuous active ringtone & vibration loop
+        AlarmRingtonePlayer.startRingtone(context, soundUri)
+
+        // Full Screen Intent pointing to ReminderAlarmActivity
+        val fullScreenIntent = Intent(context, ReminderAlarmActivity::class.java).apply {
+            putExtra(ReminderAlarmActivity.EXTRA_TASK_ID, taskId)
+            putExtra(ReminderAlarmActivity.EXTRA_TASK_TITLE, title)
+            putExtra(ReminderAlarmActivity.EXTRA_TASK_DESCRIPTION, description)
+            putExtra(ReminderAlarmActivity.EXTRA_TASK_PRIORITY, priority)
+            putExtra(ReminderAlarmActivity.EXTRA_TASK_CATEGORY, category)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
+        val fullScreenPendingIntent = PendingIntent.getActivity(
+            context,
+            taskId + 2000,
+            fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Action 1: Snooze 10 Minutes
+        val snoozeIntent = Intent(context, TaskActionReceiver::class.java).apply {
+            action = TaskActionReceiver.ACTION_SNOOZE
+            putExtra(TaskActionReceiver.EXTRA_TASK_ID, taskId)
+            putExtra(TaskActionReceiver.EXTRA_SNOOZE_MINUTES, 10)
+        }
+        val snoozePendingIntent = PendingIntent.getBroadcast(
+            context,
+            taskId + 3000,
+            snoozeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Action 2: Reschedule
+        val rescheduleIntent = Intent(context, ReminderAlarmActivity::class.java).apply {
+            putExtra(ReminderAlarmActivity.EXTRA_TASK_ID, taskId)
+            putExtra(ReminderAlarmActivity.EXTRA_TASK_TITLE, title)
+            putExtra(ReminderAlarmActivity.EXTRA_OPEN_RESCHEDULE, true)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val reschedulePendingIntent = PendingIntent.getActivity(
+            context,
+            taskId + 4000,
+            rescheduleIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Action 3: Close / Dismiss
+        val dismissIntent = Intent(context, TaskActionReceiver::class.java).apply {
+            action = TaskActionReceiver.ACTION_DISMISS
+            putExtra(TaskActionReceiver.EXTRA_TASK_ID, taskId)
+        }
+        val dismissPendingIntent = PendingIntent.getBroadcast(
+            context,
+            taskId + 5000,
+            dismissIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         // Tap action: open task details in MainActivity via deep link
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -171,6 +216,10 @@ class TaskAlarmReceiver : BroadcastReceiver() {
             .setVibrate(longArrayOf(0, 500, 200, 500))
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .addAction(android.R.drawable.ic_popup_sync, "Snooze 10m", snoozePendingIntent)
+            .addAction(android.R.drawable.ic_menu_today, "Reschedule", reschedulePendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Close", dismissPendingIntent)
 
         if (isHighPriority) {
             notificationBuilder.setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -181,5 +230,12 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         }
 
         notificationManager.notify(taskId, notificationBuilder.build())
+
+        // Launch full screen activity directly
+        try {
+            context.startActivity(fullScreenIntent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not start full-screen activity directly: ${e.message}")
+        }
     }
 }

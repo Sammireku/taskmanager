@@ -78,9 +78,13 @@ class TaskViewModel(
             // TTS engine unavailable
         }
         viewModelScope.launch {
-            val thirtyDaysAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
-            db.taskDao().purgeOldTrash(thirtyDaysAgo)
-            workScheduler.schedulePeriodicTrashPurge()
+            try {
+                val thirtyDaysAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
+                db.taskDao().purgeOldTrash(thirtyDaysAgo)
+            } catch (_: Exception) {}
+            try {
+                workScheduler.schedulePeriodicTrashPurge()
+            } catch (_: Exception) {}
         }
 
         try {

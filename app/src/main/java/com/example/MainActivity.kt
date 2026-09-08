@@ -32,12 +32,15 @@ import androidx.navigation.navDeepLink
 import android.content.Intent
 
 class MainActivity : ComponentActivity() {
+  private val openCreateTask = mutableStateOf(false)
+  private val activeTaskId = mutableStateOf<Int?>(null)
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val app = application as CobbyaiApp
     val viewModel = TaskViewModel(app.database, this)
 
-    val deepLinkTaskId = extractTaskIdFromIntent(intent)
+    handleIncomingIntent(intent)
     
     enableEdgeToEdge()
     setContent {
@@ -47,9 +50,20 @@ class MainActivity : ComponentActivity() {
       CobbyaiTheme(themeMode = themeMode, dynamicColor = dynamicColor) {
         val navController = rememberNavController()
 
-        LaunchedEffect(deepLinkTaskId) {
-          if (deepLinkTaskId != null) {
-            navController.navigate("detail/$deepLinkTaskId")
+        val currentTaskId by activeTaskId
+        val shouldCreate by openCreateTask
+
+        LaunchedEffect(currentTaskId) {
+          currentTaskId?.let { id ->
+            navController.navigate("detail/$id")
+            activeTaskId.value = null
+          }
+        }
+
+        LaunchedEffect(shouldCreate) {
+          if (shouldCreate) {
+            navController.navigate("create")
+            openCreateTask.value = false
           }
         }
 
@@ -96,6 +110,23 @@ class MainActivity : ComponentActivity() {
           }
         }
       }
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleIncomingIntent(intent)
+  }
+
+  private fun handleIncomingIntent(intent: Intent?) {
+    if (intent == null) return
+    if (intent.getBooleanExtra("EXTRA_OPEN_CREATE_TASK", false)) {
+      openCreateTask.value = true
+    }
+    val id = extractTaskIdFromIntent(intent)
+    if (id != null) {
+      activeTaskId.value = id
     }
   }
 

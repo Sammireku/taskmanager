@@ -98,6 +98,19 @@ class TaskWidgetProvider : AppWidgetProvider() {
         )
         views.setOnClickPendingIntent(R.id.widget_header_container, openAppPendingIntent)
 
+        // Add Task Intent -> open Create Task screen directly in MainActivity
+        val addTaskIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("EXTRA_OPEN_CREATE_TASK", true)
+        }
+        val addTaskPendingIntent = PendingIntent.getActivity(
+            context,
+            999,
+            addTaskIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        views.setOnClickPendingIntent(R.id.widget_add_btn, addTaskPendingIntent)
+
         val highCount = pendingTasks.count { it.priority.equals("High", ignoreCase = true) }
         views.setTextViewText(R.id.widget_badge, "${pendingTasks.size} pending" + if (highCount > 0) " • $highCount high" else "")
 

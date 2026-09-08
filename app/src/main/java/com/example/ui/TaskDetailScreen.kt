@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.Circle
 import com.example.places.PlaceSuggestion
 import com.example.places.PlaceDetails
@@ -179,6 +180,47 @@ fun TaskDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = {
+                            val shareBody = buildString {
+                                append("📌 Task: ${task.safeTitle}\n")
+                                if (task.description?.isNotBlank() == true) {
+                                    append("📝 Description: ${task.description}\n")
+                                }
+                                if (task.dueDate != null) {
+                                    val dateStr = java.text.SimpleDateFormat("EEEE, MMM d, yyyy 'at' h:mm a", java.util.Locale.getDefault()).format(java.util.Date(task.dueDate!!))
+                                    append("⏰ Due: $dateStr\n")
+                                }
+                                append("🔥 Priority: ${task.safePriority}\n")
+                                append("🏷️ Category: ${task.safeCategory}\n")
+                                if (!task.locationName.isNullOrBlank()) {
+                                    append("📍 Location: ${task.locationName}\n")
+                                }
+                                if (subtasks.isNotEmpty()) {
+                                    append("\nSubtasks:\n")
+                                    subtasks.forEach { sub ->
+                                        append(if (sub.isDone) "  [x] " else "  [ ] ")
+                                        append("${sub.title}\n")
+                                    }
+                                }
+                                append("\nShared from Cobby AI Daily Planner")
+                            }
+
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "Task: ${task.safeTitle}")
+                                putExtra(Intent.EXTRA_TEXT, shareBody)
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share Task Details"))
+                        },
+                        modifier = Modifier.testTag("share_task_button")
+                    ) {
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = "Share Task",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     if (onEditTask != null) {
                         IconButton(
                             onClick = { onEditTask(task.id) },

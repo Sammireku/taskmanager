@@ -6,16 +6,34 @@ import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
 
 class FirestoreRepository {
-    private val firestore by lazy { FirebaseFirestore.getInstance() }
-    private val auth by lazy { FirebaseAuth.getInstance() }
-
-    fun getUserId(): String {
-        return auth.currentUser?.uid ?: "device_user_default"
+    private val firestore: FirebaseFirestore? by lazy {
+        try {
+            FirebaseFirestore.getInstance()
+        } catch (_: Exception) {
+            null
+        }
+    }
+    private val auth: FirebaseAuth? by lazy {
+        try {
+            FirebaseAuth.getInstance()
+        } catch (_: Exception) {
+            null
+        }
     }
 
-    suspend fun saveTask(task: Task, userId: String = getUserId()) {
+    fun getUserId(): String? {
+        return try {
+            auth?.currentUser?.uid
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    suspend fun saveTask(task: Task, userId: String? = getUserId()) {
+        val targetUid = userId ?: getUserId() ?: return
+        val db = firestore ?: return
         try {
-            val userDoc = firestore.collection("users").document(userId).collection("userTasks").document(task.id.toString())
+            val userDoc = db.collection("users").document(targetUid).collection("userTasks").document(task.id.toString())
             val taskMap = hashMapOf<String, Any?>(
                 "id" to task.id,
                 "title" to task.safeTitle,
@@ -40,18 +58,20 @@ class FirestoreRepository {
             )
             userDoc.set(taskMap, SetOptions.merge()).await()
         } catch (e: Exception) {
-            // Log or ignore if offline mode
+            // Log or handle offline state
         }
     }
 
-    suspend fun syncTasks(localTasks: List<Task>, userId: String = getUserId()): List<Task> {
+    suspend fun syncTasks(localTasks: List<Task>, userId: String? = getUserId()): List<Task> {
+        val targetUid = userId ?: getUserId() ?: return emptyList()
+        val db = firestore ?: return emptyList()
         // Push local tasks
         for (t in localTasks) {
-            saveTask(t, userId)
+            saveTask(t, targetUid)
         }
 
         // Pull remote tasks from Firestore
-        val snapshot = firestore.collection("users").document(userId).collection("userTasks").get().await()
+        val snapshot = db.collection("users").document(targetUid).collection("userTasks").get().await()
         val remoteList = mutableListOf<Task>()
         for (doc in snapshot.documents) {
             try {
@@ -104,17 +124,21 @@ class FirestoreRepository {
         return remoteList
     }
 
-    suspend fun getTasks(userId: String = getUserId()): List<Task> {
-        val snapshot = firestore.collection("users").document(userId).collection("userTasks").get().await()
+    suspend fun getTasks(userId: String? = getUserId()): List<Task> {
+        val targetUid = userId ?: getUserId() ?: return emptyList()
+        val db = firestore ?: return emptyList()
+        val snapshot = db.collection("users").document(targetUid).collection("userTasks").get().await()
         return snapshot.toObjects(Task::class.java)
     }
 
     fun listenToUserTasks(
-        userId: String = getUserId(),
+        userId: String? = getUserId(),
         onTasksUpdated: (List<Task>) -> Unit
-    ): com.google.firebase.firestore.ListenerRegistration {
-        return firestore.collection("users")
-            .document(userId)
+    ): com.google.firebase.firestore.ListenerRegistration? {
+        val targetUid = userId ?: getUserId() ?: return null
+        val db = firestore ?: return null
+        return db.collection("users")
+            .document(targetUid)
             .collection("userTasks")
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) return@addSnapshotListener

@@ -32,13 +32,23 @@
             android:text="0 pending"
             android:textColor="#6750A4"
             android:textSize="11sp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp" />
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp" />
+
+        <ImageView
+            android:id="@+id/widget_add_btn"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_marginStart="6dp"
+            android:src="@android:drawable/ic_input_add"
+            android:tint="#6750A4"
+            android:contentDescription="Add Task" />
 
         <ImageView
             android:id="@+id/widget_refresh_btn"
             android:layout_width="20dp"
             android:layout_height="20dp"
+            android:layout_marginStart="6dp"
             android:src="@android:drawable/ic_menu_rotate"
             android:tint="#49454F"
             android:contentDescription="Refresh Widget" />

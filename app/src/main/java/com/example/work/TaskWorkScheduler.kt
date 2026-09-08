@@ -22,8 +22,13 @@ class TaskWorkScheduler(private val context: Context) {
         fun getWorkNameForTask(taskId: Int): String = "$UNIQUE_WORK_PREFIX$taskId"
     }
 
-    private val workManager: WorkManager
-        get() = WorkManager.getInstance(context)
+    private val workManager: WorkManager?
+        get() = try {
+            WorkManager.getInstance(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "WorkManager instance unavailable", e)
+            null
+        }
 
     /**
      * Schedules a WorkManager trigger for a task's due date.
@@ -62,7 +67,7 @@ class TaskWorkScheduler(private val context: Context) {
             .build()
 
         val uniqueWorkName = getWorkNameForTask(task.id)
-        workManager.enqueueUniqueWork(
+        workManager?.enqueueUniqueWork(
             uniqueWorkName,
             ExistingWorkPolicy.REPLACE,
             workRequest
@@ -76,7 +81,7 @@ class TaskWorkScheduler(private val context: Context) {
      */
     fun cancelDueDateReminder(taskId: Int) {
         val uniqueWorkName = getWorkNameForTask(taskId)
-        workManager.cancelUniqueWork(uniqueWorkName)
+        workManager?.cancelUniqueWork(uniqueWorkName)
         Log.d(TAG, "Cancelled WorkManager trigger for task #$taskId ($uniqueWorkName)")
     }
 
@@ -97,7 +102,7 @@ class TaskWorkScheduler(private val context: Context) {
             .addTag("test_work_notification")
             .build()
 
-        workManager.enqueue(testWorkRequest)
+        workManager?.enqueue(testWorkRequest)
         Log.d(TAG, "Enqueued immediate test WorkManager notification for task #${task.id}")
     }
 
@@ -109,7 +114,7 @@ class TaskWorkScheduler(private val context: Context) {
             24, TimeUnit.HOURS
         ).addTag("trash_purge_job").build()
 
-        workManager.enqueueUniquePeriodicWork(
+        workManager?.enqueueUniquePeriodicWork(
             "trash_30day_purge_work",
             androidx.work.ExistingPeriodicWorkPolicy.KEEP,
             purgeRequest

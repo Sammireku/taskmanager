@@ -16,8 +16,8 @@ class TrashPurgeWorker(
             val db = Room.databaseBuilder(
                 applicationContext,
                 AppDatabase::class.java,
-                "task_database"
-            ).fallbackToDestructiveMigration().build()
+                "cobbyai-database"
+            ).addMigrations(AppDatabase.MIGRATION_5_6).fallbackToDestructiveMigration(true).build()
 
             val thirtyDaysAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
             db.taskDao().purgeOldTrash(thirtyDaysAgo)
