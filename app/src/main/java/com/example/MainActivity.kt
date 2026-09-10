@@ -34,18 +34,20 @@ import android.content.Intent
 class MainActivity : ComponentActivity() {
   private val openCreateTask = mutableStateOf(false)
   private val activeTaskId = mutableStateOf<Int?>(null)
+  private var viewModel: TaskViewModel? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val app = application as CobbyaiApp
-    val viewModel = TaskViewModel(app.database, this)
+    val vm = TaskViewModel(app.database, this)
+    this.viewModel = vm
 
     handleIncomingIntent(intent)
     
     enableEdgeToEdge()
     setContent {
-      val themeMode by viewModel.themeMode.collectAsState()
-      val dynamicColor by viewModel.dynamicColorEnabled.collectAsState()
+      val themeMode by vm.themeMode.collectAsState()
+      val dynamicColor by vm.dynamicColorEnabled.collectAsState()
 
       CobbyaiTheme(themeMode = themeMode, dynamicColor = dynamicColor) {
         val navController = rememberNavController()
@@ -71,7 +73,7 @@ class MainActivity : ComponentActivity() {
           NavHost(navController = navController, startDestination = "home") {
             composable("home") {
               HomeScreen(
-                viewModel = viewModel,
+                viewModel = vm,
                 onTaskClick = { taskId -> navController.navigate("detail/$taskId") },
                 onEditTask = { taskId -> navController.navigate("edit/$taskId") },
                 onCreateTask = { navController.navigate("create") },
@@ -82,13 +84,13 @@ class MainActivity : ComponentActivity() {
             }
             composable("geofence_diagnostics") {
               com.example.ui.GeofenceDiagnosticScreen(
-                viewModel = viewModel,
+                viewModel = vm,
                 onBack = { navController.popBackStack() }
               )
             }
             composable("settings") {
               com.example.ui.SettingsScreen(
-                viewModel = viewModel,
+                viewModel = vm,
                 onBack = { navController.popBackStack() },
                 onNavigateToDiagnostics = { navController.navigate("geofence_diagnostics") }
               )
@@ -96,7 +98,7 @@ class MainActivity : ComponentActivity() {
             composable("create") {
               TaskFormScreen(
                 taskId = null,
-                viewModel = viewModel,
+                viewModel = vm,
                 onBack = { navController.popBackStack() }
               )
             }
@@ -104,7 +106,7 @@ class MainActivity : ComponentActivity() {
               val taskId = backStackEntry.arguments?.getString("taskId")?.toIntOrNull()
               TaskFormScreen(
                 taskId = taskId,
-                viewModel = viewModel,
+                viewModel = vm,
                 onBack = { navController.popBackStack() }
               )
             }
@@ -117,7 +119,7 @@ class MainActivity : ComponentActivity() {
               val taskId = backStackEntry.arguments?.getString("taskId")?.toIntOrNull() ?: 0
               TaskDetailScreen(
                 taskId = taskId,
-                viewModel = viewModel,
+                viewModel = vm,
                 onBack = { navController.popBackStack() },
                 onEditTask = { id -> navController.navigate("edit/$id") }
               )
@@ -136,6 +138,21 @@ class MainActivity : ComponentActivity() {
 
   private fun handleIncomingIntent(intent: Intent?) {
     if (intent == null) return
+
+    // Check for Google Assistant App Action queries or shared voice text
+    val assistantQuery = extractAssistantQuery(intent)
+    if (!assistantQuery.isNullOrBlank()) {
+      viewModel?.parseAndAddTask(assistantQuery, isVoiceInitiated = true)
+      return
+    }
+
+    // Check for voice shortcut launcher (e.g. cobbyai://voice)
+    val uri = intent.data
+    if (uri != null && uri.scheme == "cobbyai" && uri.host == "voice") {
+      viewModel?.triggerVoiceInput()
+      return
+    }
+
     if (intent.getBooleanExtra("EXTRA_OPEN_CREATE_TASK", false)) {
       openCreateTask.value = true
     }
@@ -143,6 +160,36 @@ class MainActivity : ComponentActivity() {
     if (id != null) {
       activeTaskId.value = id
     }
+  }
+
+  private fun extractAssistantQuery(intent: Intent?): String? {
+    if (intent == null) return null
+
+    // 1. Check intent parameters defined in shortcuts.xml
+    if (intent.hasExtra("assistant_query")) {
+      val query = intent.getStringExtra("assistant_query")
+      if (!query.isNullOrBlank()) return query
+    }
+
+    // 2. Check standard Google Assistant BII extras
+    val extras = intent.extras
+    if (extras != null) {
+      for (key in listOf("text", "query", "android.intent.extra.TEXT", "taskList.name", "note.text")) {
+        val value = extras.getString(key)
+        if (!value.isNullOrBlank()) return value
+      }
+    }
+
+    // 3. Check URI query parameters (e.g. cobbyai://task?query=... or cobbyai://voice?text=...)
+    val uri = intent.data
+    if (uri != null) {
+      val textParam = uri.getQueryParameter("text")
+        ?: uri.getQueryParameter("query")
+        ?: uri.getQueryParameter("q")
+      if (!textParam.isNullOrBlank()) return textParam
+    }
+
+    return null
   }
 
   private fun extractTaskIdFromIntent(intent: Intent?): Int? {

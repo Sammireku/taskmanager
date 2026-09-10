@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Google Assistant App Action: Create Task / To-Do / Reminder -->
+    <capability android:name="actions.intent.CREATE_CREATE_TASK_LIST">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.example"
+            android:targetClass="com.example.MainActivity">
+            <parameter
+                android:name="taskList.name"
+                android:key="assistant_query" />
+        </intent>
+    </capability>
+
+    <!-- Alternative Google Assistant App Action: Create Note / Reminder with Freeform Query -->
+    <capability android:name="actions.intent.CREATE_NOTE">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.example"
+            android:targetClass="com.example.MainActivity">
+            <parameter
+                android:name="note.text"
+                android:key="assistant_query" />
+        </intent>
+    </capability>
+
+    <!-- Static App Shortcut for Instant Voice / Quick Task Entry -->
+    <shortcut
+        android:shortcutId="voice_quick_task"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_voice_task_short"
+        android:shortcutLongLabel="@string/shortcut_voice_task_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.example"
+            android:targetClass="com.example.MainActivity"
+            android:data="cobbyai://voice" />
+    </shortcut>
+</shortcuts>

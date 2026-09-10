@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">cobbyai</string>
+    <string name="shortcut_voice_task_short">Voice Task</string>
+    <string name="shortcut_voice_task_long">Add task by voice with Cobby</string>
 </resources>

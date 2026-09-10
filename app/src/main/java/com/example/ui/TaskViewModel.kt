@@ -180,6 +180,18 @@ class TaskViewModel(
 
     val userName = MutableStateFlow(prefsManager.userName)
 
+    // Voice trigger requested from external actions (Google Assistant, App Shortcuts, or Deep Links)
+    private val _triggerVoiceInputEvent = MutableStateFlow<Long?>(null)
+    val triggerVoiceInputEvent: StateFlow<Long?> = _triggerVoiceInputEvent.asStateFlow()
+
+    fun triggerVoiceInput() {
+        _triggerVoiceInputEvent.value = System.currentTimeMillis()
+    }
+
+    fun clearVoiceInputTrigger() {
+        _triggerVoiceInputEvent.value = null
+    }
+
     private val _cobbySpeech = MutableStateFlow(
         if (prefsManager.userName.isNotBlank()) {
             "Hey ${prefsManager.userName}! I'm Cobby, your AI companion. Ready to conquer your day?"

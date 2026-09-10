@@ -41,6 +41,16 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="cobbyai" android:host="task" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="cobbyai" android:host="voice" />
+            </intent-filter>
+            <!-- Google Assistant App Actions & Android Shortcuts declaration -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
         <receiver android:name=".widget.TaskWidgetProvider" android:exported="true">
             <intent-filter>

@@ -241,6 +241,15 @@ fun HomeScreen(
         }
     }
 
+    // React to external voice triggers (e.g. Google Assistant or Quick Shortcut)
+    val externalVoiceTrigger by viewModel.triggerVoiceInputEvent.collectAsState()
+    LaunchedEffect(externalVoiceTrigger) {
+        if (externalVoiceTrigger != null) {
+            viewModel.clearVoiceInputTrigger()
+            startGoogleVoiceRecorder(target = "FAB")
+        }
+    }
+
     // Calculate progress stats
     val totalTasksCount = allTasks.size
     val completedTasksCount = allTasks.count { it.isDone }
