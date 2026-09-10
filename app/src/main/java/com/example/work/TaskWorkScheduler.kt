@@ -3,21 +3,24 @@ package com.example.work
 import android.content.Context
 import android.util.Log
 import androidx.work.Data
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.example.data.Task
 import java.util.concurrent.TimeUnit
 
 /**
- * WorkManager scheduler that registers background triggers for upcoming task due dates.
- * Delivers local push notifications reliably across system idle and reboots.
+ * WorkManager scheduler that registers background triggers for upcoming task due dates
+ * and daily habit reminders.
  */
 class TaskWorkScheduler(private val context: Context) {
 
     companion object {
         private const val TAG = "TaskWorkScheduler"
         private const val UNIQUE_WORK_PREFIX = "task_due_work_"
+        private const val DAILY_HABIT_WORK_NAME = "daily_habit_reminders_work"
 
         fun getWorkNameForTask(taskId: Int): String = "$UNIQUE_WORK_PREFIX$taskId"
     }
@@ -86,6 +89,42 @@ class TaskWorkScheduler(private val context: Context) {
     }
 
     /**
+     * Schedules daily habit reminders using WorkManager to periodically notify the user
+     * about active daily habits.
+     */
+    fun scheduleDailyHabitReminders() {
+        val habitWorkRequest = PeriodicWorkRequestBuilder<HabitReminderWorker>(
+            24, TimeUnit.HOURS
+        )
+            .addTag("daily_habit_reminders")
+            .build()
+
+        workManager?.enqueueUniquePeriodicWork(
+            DAILY_HABIT_WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            habitWorkRequest
+        )
+        Log.d(TAG, "Enqueued periodic daily habit reminder WorkManager task.")
+    }
+
+    /**
+     * Immediate trigger to test daily habit reminder WorkManager notification pipeline.
+     */
+    fun triggerImmediateHabitReminderWork(habitTitle: String = "Daily Mindfulness & Planning") {
+        val inputData = Data.Builder()
+            .putString(HabitReminderWorker.KEY_HABIT_TITLE, habitTitle)
+            .build()
+
+        val testWorkRequest = OneTimeWorkRequestBuilder<HabitReminderWorker>()
+            .setInputData(inputData)
+            .addTag("test_habit_notification")
+            .build()
+
+        workManager?.enqueue(testWorkRequest)
+        Log.d(TAG, "Enqueued immediate test habit reminder notification for $habitTitle")
+    }
+
+    /**
      * Immediate trigger to test the WorkManager push notification pipeline.
      */
     fun triggerImmediateTestWork(task: Task) {
@@ -120,5 +159,85 @@ class TaskWorkScheduler(private val context: Context) {
             purgeRequest
         )
         Log.d(TAG, "Enqueued periodic 24h background trash purge work")
+    }
+
+    /**
+     * Schedules periodic background cloud sync constrained to connected network and healthy battery.
+     */
+    fun schedulePeriodicCloudSync() {
+        val constraints = androidx.work.Constraints.Builder()
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+            .setRequiresBatteryNotLow(true)
+            .build()
+
+        val syncRequest = androidx.work.PeriodicWorkRequestBuilder<CloudSyncWorker>(
+            1, TimeUnit.HOURS
+        )
+            .setConstraints(constraints)
+            .addTag("periodic_cloud_sync")
+            .build()
+
+        workManager?.enqueueUniquePeriodicWork(
+            CloudSyncWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            syncRequest
+        )
+        Log.d(TAG, "Enqueued periodic cloud sync with NetworkType.CONNECTED constraints.")
+    }
+
+    /**
+     * Enqueues an immediate cloud sync constrained to connected network.
+     */
+    fun enqueueImmediateCloudSync() {
+        val constraints = androidx.work.Constraints.Builder()
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+            .build()
+
+        val syncRequest = OneTimeWorkRequestBuilder<CloudSyncWorker>()
+            .setConstraints(constraints)
+            .addTag("immediate_cloud_sync")
+            .build()
+
+        workManager?.enqueueUniqueWork(
+            "immediate_sync_run",
+            ExistingWorkPolicy.REPLACE,
+            syncRequest
+        )
+        Log.d(TAG, "Enqueued immediate cloud sync with NetworkType.CONNECTED constraint.")
+    }
+
+    /**
+     * Schedules periodic geofence radius calibration based on GPS accuracy signals.
+     */
+    fun schedulePeriodicGeofenceCalibration() {
+        val constraints = androidx.work.Constraints.Builder()
+            .setRequiresBatteryNotLow(true)
+            .build()
+
+        val calRequest = androidx.work.PeriodicWorkRequestBuilder<GeofenceCalibrationWorker>(
+            2, TimeUnit.HOURS
+        )
+            .setConstraints(constraints)
+            .addTag("geofence_calibration")
+            .build()
+
+        workManager?.enqueueUniquePeriodicWork(
+            GeofenceCalibrationWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            calRequest
+        )
+        Log.d(TAG, "Enqueued periodic geofence calibration job with battery constraints.")
+    }
+
+    /**
+     * Immediately runs a geofence calibration pass to adjust radii against current GPS accuracy.
+     */
+    fun enqueueImmediateCalibration() {
+        val calRequest = OneTimeWorkRequestBuilder<GeofenceCalibrationWorker>()
+            .addTag("immediate_geofence_calibration")
+            .build()
+
+        workManager?.enqueue(calRequest)
+        Log.d(TAG, "Enqueued immediate geofence calibration pass.")
     }
 }

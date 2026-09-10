@@ -13,11 +13,7 @@ class TrashPurgeWorker(
 
     override suspend fun doWork(): Result {
         return try {
-            val db = Room.databaseBuilder(
-                applicationContext,
-                AppDatabase::class.java,
-                "cobbyai-database"
-            ).addMigrations(AppDatabase.MIGRATION_5_6).fallbackToDestructiveMigration(true).build()
+            val db = AppDatabase.getInstance(applicationContext)
 
             val thirtyDaysAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
             db.taskDao().purgeOldTrash(thirtyDaysAgo)

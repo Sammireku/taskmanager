@@ -49,7 +49,7 @@ class TaskWidgetProvider : AppWidgetProvider() {
                     val db = app?.database
                     val task = db?.taskDao()?.getTaskById(taskId)
                     if (task != null) {
-                        db.taskDao().updateTask(task.copy(isCompleted = true))
+                        db.taskDao().updateTask(task.copy(status = "COMPLETED"))
                         withContext(Dispatchers.Main) {
                             updateAllWidgets(context)
                         }
@@ -70,7 +70,7 @@ class TaskWidgetProvider : AppWidgetProvider() {
             }
 
             // Filter for pending, prioritising High priority then others
-            val pendingTasks = tasks.filter { !it.isCompleted }
+            val pendingTasks = tasks.filter { !it.isDone }
                 .sortedWith(
                     compareByDescending<Task> { it.priority.equals("High", ignoreCase = true) }
                         .thenBy { it.dueDate ?: Long.MAX_VALUE }

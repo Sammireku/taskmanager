@@ -295,9 +295,9 @@ fun TaskDetailScreen(
                                 modifier = Modifier.testTag("detail_toggle_complete")
                             ) {
                                 Icon(
-                                    imageVector = if (task.isCompleted) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                                    imageVector = if (task.isDone) Icons.Default.CheckCircle else Icons.Outlined.Circle,
                                     contentDescription = "Toggle Complete",
-                                    tint = if (task.isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                    tint = if (task.isDone) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                                     modifier = Modifier.size(28.dp)
                                 )
                             }
@@ -309,7 +309,7 @@ fun TaskDetailScreen(
                             text = task.title,
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
-                            textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
+                            textDecoration = if (task.isDone) TextDecoration.LineThrough else TextDecoration.None
                         )
 
                         if (!task.description.isNullOrBlank()) {

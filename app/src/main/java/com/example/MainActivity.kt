@@ -75,7 +75,22 @@ class MainActivity : ComponentActivity() {
                 onTaskClick = { taskId -> navController.navigate("detail/$taskId") },
                 onEditTask = { taskId -> navController.navigate("edit/$taskId") },
                 onCreateTask = { navController.navigate("create") },
+                onNavigateToSettings = { navController.navigate("settings") },
+                onNavigateToDiagnostics = { navController.navigate("geofence_diagnostics") },
                 modifier = Modifier.padding(innerPadding)
+              )
+            }
+            composable("geofence_diagnostics") {
+              com.example.ui.GeofenceDiagnosticScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() }
+              )
+            }
+            composable("settings") {
+              com.example.ui.SettingsScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onNavigateToDiagnostics = { navController.navigate("geofence_diagnostics") }
               )
             }
             composable("create") {

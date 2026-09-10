@@ -18,11 +18,9 @@ data class Task(
     val description: String? = null,
     val priority: String = "Medium", // "High", "Medium", "Low"
     val dueDate: Long? = null, // Timestamp ms
-    val completionStatus: String = "PENDING", // "PENDING", "IN_PROGRESS", "COMPLETED"
     val status: String = "PENDING", // "PENDING", "IN_PROGRESS", "COMPLETED"
     val isHabit: Boolean = false, // Habit tracking flag
     val habitFrequency: String? = null, // e.g. "Daily", "Weekly", "Weekdays"
-    val isCompleted: Boolean = false,
     val category: String? = null,
     val subtasksJson: String? = null, // JSON serialized List<SubTask>
     val locationName: String? = null,
@@ -31,14 +29,13 @@ data class Task(
     val geofenceRadius: Float = 150f, // in meters
     val triggerDirection: String = "ARRIVAL", // "ARRIVAL" or "DEPARTURE"
     val reminderTone: String? = "DEFAULT", // "DEFAULT", "URGENT_ALARM", "GENTLE_NOTIF", "PHONE_RINGTONE", "CHIME", "BEACON"
-    val isDeleted: Boolean = false,
     val deletedAt: Long? = null
 ) {
     val isSoftDeleted: Boolean
-        get() = isDeleted || (deletedAt != null && deletedAt!! > 0)
+        get() = deletedAt != null && deletedAt!! > 0
 
     val isDone: Boolean
-        get() = isCompleted || completionStatus == "COMPLETED" || safeStatus == "COMPLETED"
+        get() = status.equals("COMPLETED", ignoreCase = true)
 
     val safeTitle: String
         get() = (title as String?).orEmpty().ifBlank { "Untitled Task" }

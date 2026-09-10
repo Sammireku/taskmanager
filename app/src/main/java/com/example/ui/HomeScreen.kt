@@ -1,15 +1,20 @@
 package com.example.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,12 +28,16 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FlightLand
@@ -43,6 +52,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Work
@@ -81,6 +91,8 @@ fun HomeScreen(
     onTaskClick: (Int) -> Unit,
     onEditTask: (Int) -> Unit = {},
     onCreateTask: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {},
+    onNavigateToDiagnostics: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val allTasks by viewModel.allTasks.collectAsState()
@@ -135,6 +147,7 @@ fun HomeScreen(
         hasLocationPermission = granted
         if (granted) {
             viewModel.refreshLocation()
+            viewModel.syncAllGeofences()
         }
     }
 
@@ -156,20 +169,81 @@ fun HomeScreen(
     }
 
     val currentDate = remember { LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMMM d")) }
+    val userName by viewModel.userName.collectAsState()
+    var showNameDialog by remember { mutableStateOf(false) }
     val cobbyMood by viewModel.cobbyMood.collectAsState()
     val cobbySpeech by viewModel.cobbySpeech.collectAsState()
     var showAddTaskDialog by remember { mutableStateOf(false) }
     var showBottomSheet by remember { mutableStateOf(false) }
-    var showVoiceSheet by remember { mutableStateOf(false) }
     var inlineNaturalLanguageText by remember { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val voiceSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
+    // Google Recorder directly integrated into mic icon (no popup dialog/sheet)
+    var pendingVoiceTarget by remember { mutableStateOf("FAB") } // "FAB" or "INLINE"
+
+    val speechRecognizerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            if (!spoken.isNullOrBlank()) {
+                if (pendingVoiceTarget == "INLINE") {
+                    inlineNaturalLanguageText = spoken
+                } else {
+                    viewModel.parseAndAddTask(spoken, isVoiceInitiated = true) { task ->
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("🎤 Google Voice Added: \"${task.safeTitle}\"")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your task (e.g., 'Buy groceries at 5pm')")
+            }
+            try {
+                speechRecognizerLauncher.launch(intent)
+            } catch (e: Exception) {
+                Toast.makeText(context, "Google Speech Recognition unavailable", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Microphone permission required for Google voice input.")
+            }
+        }
+    }
+
+    fun startGoogleVoiceRecorder(target: String = "FAB") {
+        pendingVoiceTarget = target
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your task (e.g., 'Buy groceries at 5pm')")
+            }
+            try {
+                speechRecognizerLauncher.launch(intent)
+            } catch (e: Exception) {
+                Toast.makeText(context, "Google Speech Recognition unavailable", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     // Calculate progress stats
     val totalTasksCount = allTasks.size
-    val completedTasksCount = allTasks.count { it.isCompleted }
+    val completedTasksCount = allTasks.count { it.isDone }
     val progressFraction = if (totalTasksCount > 0) completedTasksCount.toFloat() / totalTasksCount else 0f
     val animatedProgress by animateFloatAsState(targetValue = progressFraction, label = "progress")
 
@@ -194,17 +268,75 @@ fun HomeScreen(
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Daily Planner",
-                            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
+                        if (userName.isNotBlank()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clickable { showNameDialog = true }
+                                    .testTag("home_user_name_greeting")
+                            ) {
+                                Text(
+                                    text = "Hello, $userName! 👋",
+                                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "Edit name",
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Daily Planner",
+                                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                AssistChip(
+                                    onClick = { showNameDialog = true },
+                                    label = { Text("Set Name 👤", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
+                                    colors = AssistChipDefaults.assistChipColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        labelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    modifier = Modifier.height(26.dp).testTag("set_name_chip")
+                                )
+                            }
+                        }
                     }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        IconButton(
+                            onClick = onNavigateToDiagnostics,
+                            modifier = Modifier.testTag("geofence_radar_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = "Geofence Diagnostics & Radar",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onNavigateToSettings,
+                            modifier = Modifier.testTag("settings_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Settings",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
                         // Theme & Accessibility Menu Button
                         Box {
                             IconButton(
@@ -424,7 +556,7 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 FloatingActionButton(
-                    onClick = { showVoiceSheet = true },
+                    onClick = { startGoogleVoiceRecorder("FAB") },
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
                     contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     modifier = Modifier.testTag("voice_ai_fab")
@@ -505,6 +637,81 @@ fun HomeScreen(
                             ) {
                                 Text("Grant", style = MaterialTheme.typography.labelMedium)
                             }
+                        }
+                    }
+                }
+            }
+
+            item {
+                // Interactive Cobby AI Companion Card with Personal Voice & Name Interaction
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clickable { viewModel.onCobbyCharacterClicked() }
+                        .testTag("cobby_companion_bar"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "🤖",
+                                    fontSize = 20.sp
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "Cobby AI Companion",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                if (userName.isNotBlank()) {
+                                    Text(
+                                        text = "• for $userName",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Text(
+                                text = cobbySpeech,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(
+                            onClick = { showNameDialog = true },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("cobby_personalize_name_button")
+                        ) {
+                            Icon(
+                                imageVector = if (userName.isNotBlank()) Icons.Default.Face else Icons.Default.AccountCircle,
+                                contentDescription = "Personalize Name",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
                 }
@@ -607,12 +814,12 @@ fun HomeScreen(
                                         }
                                     } else {
                                         IconButton(
-                                            onClick = { showVoiceSheet = true },
+                                            onClick = { startGoogleVoiceRecorder("INLINE") },
                                             modifier = Modifier.size(36.dp)
                                         ) {
                                             Icon(
                                                 Icons.Default.Mic,
-                                                contentDescription = "Voice Input",
+                                                contentDescription = "Google Voice Input",
                                                 tint = MaterialTheme.colorScheme.primary,
                                                 modifier = Modifier.size(20.dp)
                                             )
@@ -651,7 +858,7 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Smart Briefing",
+                                    text = if (userName.isNotBlank()) "Smart Briefing for $userName" else "Smart Briefing",
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
@@ -723,7 +930,7 @@ fun HomeScreen(
                     nearbyTasks = nearbyTasks,
                     errandClusters = errandClusters,
                     hasLocationPermission = hasLocationPermission,
-                    hasAnyLocationTasks = allTasks.any { it.latitude != null && !it.isCompleted },
+                    hasAnyLocationTasks = allTasks.any { it.latitude != null && !it.isDone },
                     onRequestLocationPermission = {
                         locationPermissionLauncher.launch(
                             arrayOf(
@@ -911,13 +1118,16 @@ fun HomeScreen(
                 QuickAddTaskBottomSheet(
                     isAiParsing = isAiParsing,
                     onAddTask = { rawText ->
-                        viewModel.parseAndAddTask(rawText) {
-                            showBottomSheet = false
+                        showBottomSheet = false
+                        viewModel.parseAndAddTask(rawText) { task ->
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("Added: \"${task.safeTitle}\" via AI parsing!")
+                            }
                         }
                     },
                     onOpenVoice = {
                         showBottomSheet = false
-                        showVoiceSheet = true
+                        startGoogleVoiceRecorder("FAB")
                     },
                     onOpenForm = {
                         showBottomSheet = false
@@ -928,23 +1138,13 @@ fun HomeScreen(
             }
         }
 
-        // Voice Task AI Bottom Sheet
-        if (showVoiceSheet) {
-            ModalBottomSheet(
-                onDismissRequest = { showVoiceSheet = false },
-                sheetState = voiceSheetState,
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-            ) {
-                VoiceTaskBottomSheet(
-                    isAiParsing = isAiParsing,
-                    onParseAndAdd = { spokenText ->
-                        viewModel.parseAndAddTask(spokenText) {
-                            showVoiceSheet = false
-                        }
-                    },
-                    onDismiss = { showVoiceSheet = false }
-                )
-            }
+        // Conversational AI Clarification Dialog (Disambiguation popup or voice)
+        val clarificationData by viewModel.clarificationDialogData.collectAsState()
+        clarificationData?.let { data ->
+            ConversationalClarificationDialog(
+                data = data,
+                onSpeak = { viewModel.speakText(it, force = true) }
+            )
         }
 
         // Compose Add Task Dialog opened by FloatingActionButton
@@ -1128,6 +1328,80 @@ fun HomeScreen(
                 confirmButton = {
                     TextButton(onClick = { showTrashDialog = false }) {
                         Text("Close")
+                    }
+                }
+            )
+        }
+
+        // Personalize Name Dialog
+        if (showNameDialog) {
+            var dialogNameInput by remember { mutableStateOf(userName) }
+            AlertDialog(
+                onDismissRequest = { showNameDialog = false },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Face,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Personalize AI Companion", fontWeight = FontWeight.Bold)
+                    }
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "What should Cobby and your AI assistant call you?",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedTextField(
+                            value = dialogNameInput,
+                            onValueChange = { dialogNameInput = it },
+                            label = { Text("Your Name or Nickname") },
+                            placeholder = { Text("e.g., Milou") },
+                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                            trailingIcon = {
+                                if (dialogNameInput.isNotBlank()) {
+                                    IconButton(onClick = { dialogNameInput = "" }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear")
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("dialog_name_input")
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Cobby will address you by name in morning focus briefings, conversational voice answers, and celebrations!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.setUserName(dialogNameInput)
+                            showNameDialog = false
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("AI companion personalized for ${dialogNameInput.ifBlank { "you" }}! ✨")
+                            }
+                        },
+                        modifier = Modifier.testTag("dialog_save_name_button")
+                    ) {
+                        Text("Save")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showNameDialog = false }) {
+                        Text("Cancel")
                     }
                 }
             )

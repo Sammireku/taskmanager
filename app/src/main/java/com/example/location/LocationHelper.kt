@@ -130,7 +130,7 @@ class LocationHelper(private val context: Context) {
      * Finds tasks near the user's location and calculates distances.
      */
     fun getNearbyTasks(userLocation: Location, tasks: List<Task>): List<ProximityTaskInfo> {
-        val tasksWithLocation = tasks.filter { !it.isCompleted && it.latitude != null && it.longitude != null }
+        val tasksWithLocation = tasks.filter { !it.isDone && it.latitude != null && it.longitude != null }
 
         return tasksWithLocation.map { task ->
             val distance = calculateDistance(
@@ -151,7 +151,7 @@ class LocationHelper(private val context: Context) {
      * Identifies pending tasks that are physically clustered together (e.g. within 400m).
      */
     fun findClusters(tasks: List<Task>, maxClusterDistanceMeters: Float = 400f): List<ErrandCluster> {
-        val pendingWithLoc = tasks.filter { !it.isCompleted && it.latitude != null && it.longitude != null }
+        val pendingWithLoc = tasks.filter { !it.isDone && it.latitude != null && it.longitude != null }
         val clusters = mutableListOf<ErrandCluster>()
 
         for (i in pendingWithLoc.indices) {
@@ -169,34 +169,96 @@ class LocationHelper(private val context: Context) {
 
     /**
      * Geocodes a place query or address into latitude, longitude, and friendly name.
+     * Optionally biases geocoding around user's current location.
      */
-    suspend fun searchPlace(query: String): Pair<String, Pair<Double, Double>>? = withContext(Dispatchers.IO) {
+    suspend fun searchPlace(query: String, userLocation: Location? = null): Pair<String, Pair<Double, Double>>? = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext null
         try {
             val geocoder = Geocoder(context, Locale.getDefault())
+            val hasUserLoc = userLocation != null
+            val lowerLeftLat = (userLocation?.latitude ?: 0.0) - 0.5
+            val lowerLeftLng = (userLocation?.longitude ?: 0.0) - 0.5
+            val upperRightLat = (userLocation?.latitude ?: 0.0) + 0.5
+            val upperRightLng = (userLocation?.longitude ?: 0.0) + 0.5
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 suspendCancellableCoroutine { continuation ->
-                    geocoder.getFromLocationName(query, 1) { addresses ->
+                    val callback: (List<Address>) -> Unit = { addresses ->
                         val first = addresses.firstOrNull()
                         if (first != null) {
                             val name = first.featureName ?: first.thoroughfare ?: query
-                            continuation.resume(Pair(name, Pair(first.latitude, first.longitude)))
+                            if (continuation.isActive) continuation.resume(Pair(name, Pair(first.latitude, first.longitude)))
                         } else {
-                            continuation.resume(null)
+                            if (hasUserLoc) {
+                                // Fallback to unbounded global search
+                                try {
+                                    geocoder.getFromLocationName(query, 1) { fallbackAddresses ->
+                                        val fallbackFirst = fallbackAddresses.firstOrNull()
+                                        if (fallbackFirst != null) {
+                                            val name = fallbackFirst.featureName ?: fallbackFirst.thoroughfare ?: query
+                                            if (continuation.isActive) continuation.resume(Pair(name, Pair(fallbackFirst.latitude, fallbackFirst.longitude)))
+                                        } else {
+                                            if (continuation.isActive) continuation.resume(null)
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    if (continuation.isActive) continuation.resume(null)
+                                }
+                            } else {
+                                if (continuation.isActive) continuation.resume(null)
+                            }
                         }
+                    }
+
+                    if (hasUserLoc) {
+                        geocoder.getFromLocationName(query, 1, lowerLeftLat, lowerLeftLng, upperRightLat, upperRightLng, callback)
+                    } else {
+                        geocoder.getFromLocationName(query, 1, callback)
                     }
                 }
             } else {
                 @Suppress("DEPRECATION")
-                val results: List<Address>? = geocoder.getFromLocationName(query, 1)
+                val results: List<Address>? = if (hasUserLoc) {
+                    geocoder.getFromLocationName(query, 1, lowerLeftLat, lowerLeftLng, upperRightLat, upperRightLng)
+                        ?: geocoder.getFromLocationName(query, 1)
+                } else {
+                    geocoder.getFromLocationName(query, 1)
+                }
                 val first = results?.firstOrNull()
                 if (first != null) {
                     val name = first.featureName ?: first.thoroughfare ?: query
                     Pair(name, Pair(first.latitude, first.longitude))
-                } else null
+                } else {
+                    val bias = userLocation?.let { com.google.android.gms.maps.model.LatLng(it.latitude, it.longitude) }
+                    val internetSuggestions = com.example.places.InternetGeocodingService.searchPlacesInternet(query, bias, limit = 1)
+                    val top = internetSuggestions.firstOrNull()
+                    if (top != null) {
+                        val parts = top.placeId.removePrefix("osm_").split("_")
+                        val lat = parts.getOrNull(0)?.toDoubleOrNull()
+                        val lon = parts.getOrNull(1)?.toDoubleOrNull()
+                        if (lat != null && lon != null) {
+                            Pair(top.primaryText, Pair(lat, lon))
+                        } else null
+                    } else null
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Geocoder error for query $query", e)
-            null
+            Log.w(TAG, "Geocoder error for query $query, attempting internet fallback", e)
+            try {
+                val bias = userLocation?.let { com.google.android.gms.maps.model.LatLng(it.latitude, it.longitude) }
+                val internetSuggestions = com.example.places.InternetGeocodingService.searchPlacesInternet(query, bias, limit = 1)
+                val top = internetSuggestions.firstOrNull()
+                if (top != null) {
+                    val parts = top.placeId.removePrefix("osm_").split("_")
+                    val lat = parts.getOrNull(0)?.toDoubleOrNull()
+                    val lon = parts.getOrNull(1)?.toDoubleOrNull()
+                    if (lat != null && lon != null) {
+                        Pair(top.primaryText, Pair(lat, lon))
+                    } else null
+                } else null
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 
@@ -205,7 +267,7 @@ class LocationHelper(private val context: Context) {
      */
     suspend fun searchPlacesList(query: String, maxResults: Int = 5): List<Pair<String, Pair<Double, Double>>> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
-        try {
+        val geoResults = try {
             val geocoder = Geocoder(context, Locale.getDefault())
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 suspendCancellableCoroutine { continuation ->
@@ -243,13 +305,32 @@ class LocationHelper(private val context: Context) {
             Log.w(TAG, "Geocoder searchPlacesList error for query $query", e)
             emptyList()
         }
+
+        if (geoResults.isNotEmpty()) {
+            geoResults
+        } else {
+            // Internet fallback for high-accuracy and emulator reliability
+            try {
+                val internetSuggestions = com.example.places.InternetGeocodingService.searchPlacesInternet(query, limit = maxResults)
+                internetSuggestions.mapNotNull { suggestion ->
+                    val parts = suggestion.placeId.removePrefix("osm_").split("_")
+                    val lat = parts.getOrNull(0)?.toDoubleOrNull()
+                    val lon = parts.getOrNull(1)?.toDoubleOrNull()
+                    if (lat != null && lon != null) {
+                        Pair(suggestion.fullText.ifBlank { suggestion.primaryText }, Pair(lat, lon))
+                    } else null
+                }
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
     }
 
     /**
      * Reverse geocodes coordinates to a place name.
      */
     suspend fun getAddressFromCoordinates(lat: Double, lng: Double): String = withContext(Dispatchers.IO) {
-        try {
+        val geoAddress = try {
             val geocoder = Geocoder(context, Locale.getDefault())
             @Suppress("DEPRECATION")
             val list = geocoder.getFromLocation(lat, lng, 1)
@@ -258,10 +339,17 @@ class LocationHelper(private val context: Context) {
                 val parts = listOfNotNull(it.featureName, it.thoroughfare, it.locality, it.adminArea)
                     .distinct()
                     .filter { p -> p.isNotBlank() }
-                if (parts.isNotEmpty()) parts.joinToString(", ") else "Selected Location"
-            } ?: "Selected Location"
+                if (parts.isNotEmpty()) parts.joinToString(", ") else null
+            }
         } catch (e: Exception) {
-            "Selected Location"
+            null
+        }
+
+        if (!geoAddress.isNullOrBlank() && geoAddress != "Selected Location") {
+            geoAddress
+        } else {
+            // Internet fallback
+            com.example.places.InternetGeocodingService.reverseGeocodeInternet(lat, lng) ?: "Selected Location"
         }
     }
 }

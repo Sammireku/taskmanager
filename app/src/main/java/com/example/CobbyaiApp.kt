@@ -14,37 +14,12 @@ class CobbyaiApp : Application() {
     override fun onCreate() {
         super.onCreate()
         try {
-            val db = Room.databaseBuilder(
-                this,
-                AppDatabase::class.java,
-                "cobbyai-database"
-            )
-            .addMigrations(AppDatabase.MIGRATION_5_6)
-            .fallbackToDestructiveMigration(true)
-            .build()
-
-            // Open writable database to force Room migration validation during application launch
-            db.openHelper.writableDatabase
-            database = db
+            database = AppDatabase.getInstance(this)
+            // Trigger database opening on background thread or via query to ensure readiness
+            database.openHelper.writableDatabase
         } catch (e: Exception) {
             Log.e("CobbyaiApp", "Error initializing database: ${e.message}", e)
-            try {
-                deleteDatabase("cobbyai-database")
-            } catch (_: Exception) {}
-
-            val freshDb = Room.databaseBuilder(
-                this,
-                AppDatabase::class.java,
-                "cobbyai-database"
-            )
-            .fallbackToDestructiveMigration(true)
-            .build()
-
-            try {
-                freshDb.openHelper.writableDatabase
-            } catch (_: Exception) {}
-
-            database = freshDb
+            database = AppDatabase.getInstance(this)
         }
 
         try {

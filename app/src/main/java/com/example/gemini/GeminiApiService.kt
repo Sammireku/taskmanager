@@ -2,22 +2,27 @@ package com.example.gemini
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.ResponseBody
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
-import retrofit2.http.Streaming
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import com.example.BuildConfig
 
 // --- Data Classes ---
+
+@Serializable
+data class ProxyGeminiRequest(
+    val prompt: String
+)
+
+@Serializable
+data class ProxyGeminiResponse(
+    val text: String? = null,
+    val error: String? = null
+)
 
 @Serializable
 data class GenerateContentRequest(
@@ -29,6 +34,7 @@ data class GenerateContentRequest(
 @Serializable
 data class GenerationConfig(
     val responseMimeType: String? = null,
+    val responseSchema: kotlinx.serialization.json.JsonObject? = null,
     val temperature: Float? = null,
     val topP: Float? = null,
     val topK: Int? = null,
@@ -56,6 +62,30 @@ data class Candidate(
 )
 
 @Serializable
+data class ConversationalExtractedLocation(
+    val query: String? = null,
+    val specificity: String = "none", // named_venue, category, relative_to_user, referential, none
+    val trigger: String = "none" // arrival, departure, proximity, none
+)
+
+@Serializable
+data class ConversationalExtractedTime(
+    val query: String? = null,
+    val type: String = "none" // absolute, relative, recurring, none
+)
+
+@Serializable
+data class ConversationalTaskExtraction(
+    val task: String = "",
+    val location: ConversationalExtractedLocation? = null,
+    val time: ConversationalExtractedTime? = null,
+    val confidence: String = "medium", // high, medium, low
+    val ambiguous_spans: List<String> = emptyList(),
+    val clarification_question: String? = null,
+    val clarification_options: List<String> = emptyList()
+)
+
+@Serializable
 data class ParsedTaskData(
     val title: String,
     val description: String? = null,
@@ -63,8 +93,12 @@ data class ParsedTaskData(
     val priority: String = "Medium",
     val minutesFromNow: Long? = null,
     val locationName: String? = null,
-    val subtasks: List<String> = emptyList(),
-    val triggerDirection: String = "ARRIVAL"
+    val locationSpecificity: String = "none", // named_venue, category, relative, none
+    val triggerDirection: String = "ARRIVAL", // ARRIVAL, DEPARTURE, PROXIMITY
+    val rawSpan: String? = null,
+    val candidateLocations: List<String> = emptyList(),
+    val waypointContext: String? = null,
+    val subtasks: List<String> = emptyList()
 )
 
 @Serializable
@@ -84,7 +118,31 @@ data class StructuredSchedulingData(
     val description: String? = null
 )
 
+@Serializable
+data class ScheduledTimeSlot(
+    val timeSlot: String,
+    val taskId: Int? = null,
+    val taskTitle: String,
+    val priority: String = "Medium",
+    val category: String? = "Task",
+    val reasoning: String = "Scheduled based on priority and urgency."
+)
+
+@Serializable
+data class OptimizedDailySchedule(
+    val overallSummary: String = "Optimized daily schedule based on priority.",
+    val recommendedFocusBlocks: List<ScheduledTimeSlot> = emptyList(),
+    val productivityTip: String = "Take short breaks between intense focus blocks."
+)
+
 // --- Retrofit Setup ---
+
+interface GeminiProxyApiService {
+    @POST("gemini/generate")
+    suspend fun generateContentProxy(
+        @Body request: ProxyGeminiRequest
+    ): ProxyGeminiResponse
+}
 
 interface GeminiApiService {
     @POST("v1beta/models/{model}:generateContent")
@@ -102,7 +160,8 @@ interface GeminiApiService {
 }
 
 object RetrofitClient {
-    private const val BASE_URL = "https://generativelanguage.googleapis.com/"
+    private const val DIRECT_BASE_URL = "https://generativelanguage.googleapis.com/"
+    private const val PROXY_BASE_URL = "https://us-central1-cobby-tasks.cloudfunctions.net/api/"
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
@@ -118,10 +177,19 @@ object RetrofitClient {
 
     val service: GeminiApiService by lazy {
         val retrofit = Retrofit.Builder()
-            .baseUrl(BASE_URL)
+            .baseUrl(DIRECT_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(jsonInstance.asConverterFactory("application/json".toMediaType()))
             .build()
         retrofit.create(GeminiApiService::class.java)
+    }
+
+    val proxyService: GeminiProxyApiService by lazy {
+        val retrofit = Retrofit.Builder()
+            .baseUrl(PROXY_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(jsonInstance.asConverterFactory("application/json".toMediaType()))
+            .build()
+        retrofit.create(GeminiProxyApiService::class.java)
     }
 }

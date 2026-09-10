@@ -9,10 +9,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface TaskDao {
-    @Query("SELECT * FROM tasks WHERE isDeleted = 0 ORDER BY isCompleted ASC, dueDate ASC, id DESC")
+    @Query("SELECT * FROM tasks WHERE deletedAt IS NULL ORDER BY (status = 'COMPLETED') ASC, dueDate ASC, id DESC")
     fun getAllTasks(): Flow<List<Task>>
 
-    @Query("SELECT * FROM tasks WHERE isDeleted = 1 ORDER BY deletedAt DESC")
+    @Query("SELECT * FROM tasks WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC")
     fun getTrashTasks(): Flow<List<Task>>
 
     @Query("SELECT * FROM tasks ORDER BY id ASC")
@@ -27,16 +27,16 @@ interface TaskDao {
     @Update
     suspend fun updateTask(task: Task)
 
-    @Query("UPDATE tasks SET isDeleted = 1, deletedAt = :timestamp WHERE id = :id")
+    @Query("UPDATE tasks SET deletedAt = :timestamp WHERE id = :id")
     suspend fun softDeleteTask(id: Int, timestamp: Long)
 
-    @Query("UPDATE tasks SET isDeleted = 0, deletedAt = NULL WHERE id = :id")
+    @Query("UPDATE tasks SET deletedAt = NULL WHERE id = :id")
     suspend fun restoreTask(id: Int)
 
-    @Query("DELETE FROM tasks WHERE isDeleted = 1 AND deletedAt <= :cutoffTimestamp")
+    @Query("DELETE FROM tasks WHERE deletedAt IS NOT NULL AND deletedAt <= :cutoffTimestamp")
     suspend fun purgeOldTrash(cutoffTimestamp: Long)
 
-    @Query("DELETE FROM tasks WHERE isDeleted = 1")
+    @Query("DELETE FROM tasks WHERE deletedAt IS NOT NULL")
     suspend fun emptyTrash()
 
     @Delete

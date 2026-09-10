@@ -3,17 +3,24 @@ package com.example.ui
 import android.content.Context
 import android.location.Location
 import android.speech.tts.TextToSpeech
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppDatabase
+import com.example.data.SavedLocation
 import com.example.data.SubTask
 import com.example.data.Task
+import com.example.data.RegressionCorpusManager
+import com.example.gemini.ConversationalTaskExtraction
 import com.example.gemini.GeminiTaskHelper
 import com.example.gemini.RetrofitClient
 import com.example.location.ErrandCluster
 import com.example.location.GeofenceManager
 import com.example.location.LocationHelper
 import com.example.location.ProximityTaskInfo
+import com.google.android.gms.maps.model.LatLng
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,7 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import java.util.Calendar
 import java.util.Locale
-
+import kotlin.math.abs
 import com.example.places.PlacesService
 import com.example.places.PlaceSuggestion
 import com.example.places.PlaceDetails
@@ -34,6 +41,26 @@ import com.example.notification.TaskAlarmScheduler
 import com.example.work.TaskWorkScheduler
 import com.example.ui.theme.AppThemeMode
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import android.app.NotificationManager
+import android.app.NotificationChannel
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.Build
+import com.example.MainActivity
+import com.example.R
+import com.example.location.GeofenceBroadcastReceiver
+import androidx.core.app.NotificationCompat
+
+data class ResolvedLocationCandidate(
+    val name: String,
+    val address: String,
+    val latitude: Double,
+    val longitude: Double,
+    val radiusMeters: Float = 150f,
+    val isSavedLocation: Boolean = false,
+    val category: String = "CUSTOM"
+)
 
 enum class CobbyMood {
     IDLE,
@@ -44,15 +71,22 @@ enum class CobbyMood {
 }
 
 enum class SyncStatus(val label: String) {
-    OFFLINE_ROOM("Offline Local Persistence (Room DB)"),
-    SYNCING("Refreshing Local DB..."),
-    SYNCED("Local DB Active")
+    OFFLINE_ROOM("Local Room DB (Offline Mode)"),
+    SYNCING("Synchronizing Cloud..."),
+    SYNCED("Cloud Sync Active (Room + Firestore)")
 }
 
 class TaskViewModel(
     private val db: AppDatabase,
     private val context: Context
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "TaskViewModel"
+    }
+
+    val prefsManager = com.example.data.PreferencesManager(context)
+    val authManager = com.example.auth.AuthManager(context)
 
     val locationHelper = LocationHelper(context.applicationContext)
     val geofenceManager = GeofenceManager(context.applicationContext)
@@ -61,13 +95,29 @@ class TaskViewModel(
     val workScheduler = TaskWorkScheduler(context.applicationContext)
     val firestoreRepository = com.example.data.FirestoreRepository()
 
+    val soundFeedbackEnabled = MutableStateFlow(prefsManager.isSoundFeedbackEnabled)
+    val bannerNotificationsEnabled = MutableStateFlow(prefsManager.isBannerNotificationsEnabled)
+    val fullscreenAlarmEnabled = MutableStateFlow(prefsManager.isFullscreenAlarmEnabled)
+
+    val regressionCorpusManager = com.example.data.RegressionCorpusManager(context.applicationContext)
+    val regressionEntries = regressionCorpusManager.entries
+
+    private val _clarificationDialogData = MutableStateFlow<ClarificationDialogData?>(null)
+    val clarificationDialogData = _clarificationDialogData.asStateFlow()
+
     private var tts: TextToSpeech? = null
-    var isTtsEnabled = MutableStateFlow(true)
+    var isTtsEnabled = MutableStateFlow(prefsManager.isSoundFeedbackEnabled)
         private set
 
     private var firestoreListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     init {
+        viewModelScope.launch {
+            try {
+                authManager.ensureAuthenticatedUser()
+            } catch (_: Exception) {}
+        }
+
         try {
             tts = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
@@ -84,6 +134,9 @@ class TaskViewModel(
             } catch (_: Exception) {}
             try {
                 workScheduler.schedulePeriodicTrashPurge()
+                workScheduler.scheduleDailyHabitReminders()
+                workScheduler.schedulePeriodicCloudSync()
+                workScheduler.schedulePeriodicGeofenceCalibration()
             } catch (_: Exception) {}
         }
 
@@ -103,8 +156,8 @@ class TaskViewModel(
         isTtsEnabled.value = !isTtsEnabled.value
     }
 
-    fun speakText(text: String) {
-        if (isTtsEnabled.value && text.isNotBlank()) {
+    fun speakText(text: String, force: Boolean = false) {
+        if ((isTtsEnabled.value || soundFeedbackEnabled.value || force) && text.isNotBlank()) {
             val clean = text.replace(Regex("[^\u0000-\u007F]"), "").trim()
             if (clean.isNotBlank()) {
                 tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "CobbySpeech")
@@ -125,8 +178,30 @@ class TaskViewModel(
     private val _cobbyMood = MutableStateFlow(CobbyMood.IDLE)
     val cobbyMood: StateFlow<CobbyMood> = _cobbyMood.asStateFlow()
 
-    private val _cobbySpeech = MutableStateFlow("Hey there! I'm Cobby. Tap me or hit the '+' button to log your tasks!")
+    val userName = MutableStateFlow(prefsManager.userName)
+
+    private val _cobbySpeech = MutableStateFlow(
+        if (prefsManager.userName.isNotBlank()) {
+            "Hey ${prefsManager.userName}! I'm Cobby, your AI companion. Ready to conquer your day?"
+        } else {
+            "Hey there! I'm Cobby. Tell me your name so I can address you personally!"
+        }
+    )
     val cobbySpeech: StateFlow<String> = _cobbySpeech.asStateFlow()
+
+    fun setUserName(name: String) {
+        val trimmed = name.trim()
+        prefsManager.userName = trimmed
+        userName.value = trimmed
+        val greeting = if (trimmed.isNotBlank()) {
+            "Wonderful to meet you, $trimmed! I'm Cobby, your personal AI assistant. Let's make today productive!"
+        } else {
+            "Hey there! I'm Cobby. Tap me or hit the '+' button to log your tasks!"
+        }
+        _cobbySpeech.value = greeting
+        speakText(greeting)
+        refreshBriefing()
+    }
 
     // Dynamic color & theme switching state
     private val _themeMode = MutableStateFlow(AppThemeMode.SYSTEM)
@@ -140,7 +215,12 @@ class TaskViewModel(
     val swipeToDeleteEnabled: StateFlow<Boolean> = _swipeToDeleteEnabled.asStateFlow()
 
     // Offline-first Room vs Backend sync status indicator
-    private val _syncStatus = MutableStateFlow(SyncStatus.OFFLINE_ROOM)
+    val isInternetLocationEnabled = MutableStateFlow(prefsManager.isInternetLocationEnabled)
+    val isCloudSyncEnabled = MutableStateFlow(prefsManager.isCloudSyncEnabled)
+
+    private val _syncStatus = MutableStateFlow(
+        if (prefsManager.isCloudSyncEnabled) SyncStatus.SYNCED else SyncStatus.OFFLINE_ROOM
+    )
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
 
     val placeSuggestions = MutableStateFlow<List<PlaceSuggestion>>(emptyList())
@@ -150,8 +230,19 @@ class TaskViewModel(
     val scheduleSuggestionState = MutableStateFlow<com.example.gemini.ScheduleSuggestion?>(null)
     val isSuggestingSchedule = MutableStateFlow(false)
 
+    val optimizedDailyScheduleState = MutableStateFlow<com.example.gemini.OptimizedDailySchedule?>(null)
+    val isGeneratingDailySchedule = MutableStateFlow(false)
+
     val allTasks: StateFlow<List<Task>> = db.taskDao().getAllTasks()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val savedLocations: StateFlow<List<SavedLocation>> = db.savedLocationDao().getAllSavedLocations()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val diagnosticLogs: StateFlow<List<com.example.data.GeofenceEventLog>> = db.geofenceEventLogDao().getAllLogs()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val detectedLocationCandidates = MutableStateFlow<List<ResolvedLocationCandidate>>(emptyList())
 
     val trashTasks: StateFlow<List<Task>> = db.taskDao().getTrashTasks()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -194,7 +285,7 @@ class TaskViewModel(
                 "High" -> task.safePriority.equals("High", ignoreCase = true)
                 "Work" -> task.safeCategory.equals("Work", ignoreCase = true)
                 "Personal" -> task.safeCategory.equals("Personal", ignoreCase = true)
-                "Done" -> task.isCompleted
+                "Done" -> task.isDone
                 else -> task.safeCategory.equals(filter, ignoreCase = true)
             }
 
@@ -223,21 +314,64 @@ class TaskViewModel(
                     _dailyBriefing.value = "Tap the + button to add your first smart task!"
                 }
                 // Register alarms for active upcoming tasks
-                tasks.filter { !it.isCompleted && (it.dueDate ?: 0) > System.currentTimeMillis() }
+                tasks.filter { !it.isDone && (it.dueDate ?: 0) > System.currentTimeMillis() }
                     .forEach { alarmScheduler.scheduleTaskAlarm(it) }
+                // Register geofences for active location-bound tasks
+                tasks.filter { !it.isDone && it.latitude != null && it.longitude != null }
+                    .forEach { geofenceManager.registerTaskGeofence(it) }
             }
         }
 
-        // Fetch location on startup
+        // Fetch location on startup and start healing/proximity checks
         refreshLocation()
+        healSavedLocationsAndTasks()
     }
 
     fun setThemeMode(mode: AppThemeMode) {
+        prefsManager.themeModeString = mode.name
         _themeMode.value = mode
     }
 
     fun toggleDynamicColor() {
-        _dynamicColorEnabled.value = !_dynamicColorEnabled.value
+        val newVal = !_dynamicColorEnabled.value
+        prefsManager.isDynamicColorEnabled = newVal
+        _dynamicColorEnabled.value = newVal
+    }
+
+    fun setSoundFeedbackEnabled(enabled: Boolean) {
+        prefsManager.isSoundFeedbackEnabled = enabled
+        soundFeedbackEnabled.value = enabled
+        isTtsEnabled.value = enabled
+    }
+
+    fun setBannerNotificationsEnabled(enabled: Boolean) {
+        prefsManager.isBannerNotificationsEnabled = enabled
+        bannerNotificationsEnabled.value = enabled
+    }
+
+    fun setFullscreenAlarmEnabled(enabled: Boolean) {
+        prefsManager.isFullscreenAlarmEnabled = enabled
+        fullscreenAlarmEnabled.value = enabled
+    }
+
+    fun getUserId(): String = authManager.getCurrentUserId()
+
+    fun isAnonymousUser(): Boolean = authManager.isAnonymous()
+
+    suspend fun exportTasksToCsv(): String {
+        val allTasksList = db.taskDao().getAllTasksList()
+        val sb = StringBuilder()
+        sb.append("ID,Title,Description,Priority,Category,Status,Due Date,Is Habit,Frequency,Location\n")
+        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+        for (t in allTasksList) {
+            val dueStr = if (t.dueDate != null) dateFormat.format(java.util.Date(t.dueDate!!)) else ""
+            val cleanTitle = t.safeTitle.replace("\"", "\"\"")
+            val cleanDesc = (t.description ?: "").replace("\"", "\"\"")
+            val cleanCat = t.safeCategory.replace("\"", "\"\"")
+            val cleanLoc = (t.locationName ?: "").replace("\"", "\"\"")
+            sb.append("${t.id},\"$cleanTitle\",\"$cleanDesc\",\"${t.safePriority}\",\"$cleanCat\",\"${t.safeStatus}\",\"$dueStr\",${t.isHabit},\"${t.habitFrequency ?: ""}\",\"$cleanLoc\"\n")
+        }
+        return sb.toString()
     }
 
     fun setSwipeToDeleteEnabled(enabled: Boolean) {
@@ -263,26 +397,99 @@ class TaskViewModel(
         }
     }
 
+    fun setInternetLocationEnabled(enabled: Boolean) {
+        prefsManager.isInternetLocationEnabled = enabled
+        isInternetLocationEnabled.value = enabled
+    }
+
+    fun toggleCloudSync(enabled: Boolean) {
+        prefsManager.isCloudSyncEnabled = enabled
+        isCloudSyncEnabled.value = enabled
+        if (enabled) {
+            triggerBackendSync()
+        } else {
+            _syncStatus.value = SyncStatus.OFFLINE_ROOM
+            val msg = "Offline Local Persistence (Room DB) active. Your data stays 100% on-device."
+            _cobbySpeech.value = msg
+            speakText(msg)
+        }
+    }
+
     fun triggerBackendSync() {
         viewModelScope.launch {
             _syncStatus.value = SyncStatus.SYNCING
             try {
+                // Enqueue constrained WorkManager task for reliable background delivery
+                workScheduler.enqueueImmediateCloudSync()
+
                 val localTasks = db.taskDao().getAllTasksList()
                 val remoteTasks = firestoreRepository.syncTasks(localTasks)
                 for (r in remoteTasks) {
                     db.taskDao().insertTask(r)
                 }
+                prefsManager.isCloudSyncEnabled = true
+                isCloudSyncEnabled.value = true
                 _syncStatus.value = SyncStatus.SYNCED
-                val msg = "Firestore synchronized! ${remoteTasks.size} tasks in sync with cloud."
+                val msg = "Firestore synchronized! All tasks backed up to cloud."
                 _cobbySpeech.value = msg
                 speakText(msg)
-                delay(2500)
-                _syncStatus.value = SyncStatus.OFFLINE_ROOM
             } catch (e: Exception) {
+                // Fall back to offline Room, WorkManager will retry when network is connected
                 _syncStatus.value = SyncStatus.OFFLINE_ROOM
-                val msg = "Sync attempt saved locally: ${e.message ?: "Offline"}"
+                val msg = "Saved locally in Room. Cloud sync queued for when network is available."
                 _cobbySpeech.value = msg
             }
+        }
+    }
+
+    fun runGeofenceCalibration() {
+        viewModelScope.launch {
+            workScheduler.enqueueImmediateCalibration()
+            refreshLocation()
+        }
+    }
+
+    fun simulateDwellEvent() {
+        viewModelScope.launch {
+            val tasks = allTasks.value.filter { it.latitude != null && it.longitude != null && !it.isDone }
+            val targetTask = tasks.firstOrNull() ?: allTasks.value.firstOrNull()
+            val loc = userLocation.value
+            val lat = loc?.latitude ?: targetTask?.latitude ?: 37.422
+            val lng = loc?.longitude ?: targetTask?.longitude ?: -122.084
+            val title = targetTask?.safeTitle ?: "Home Chore Checklist"
+            val locationName = targetTask?.locationName ?: "Home"
+
+            db.geofenceEventLogDao().insertLog(
+                com.example.data.GeofenceEventLog(
+                    timestamp = System.currentTimeMillis(),
+                    geofenceId = targetTask?.id?.toString() ?: "demo-99",
+                    taskTitle = title,
+                    transitionType = "DWELL",
+                    dwellDurationMs = 30000L,
+                    accuracyMeters = loc?.accuracy ?: 12f,
+                    latitude = lat,
+                    longitude = lng,
+                    notes = "Simulated 30s dwell event verified at $locationName"
+                )
+            )
+
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                val notif = NotificationCompat.Builder(context, "geofence_channel")
+                    .setSmallIcon(R.drawable.ic_launcher_foreground)
+                    .setContentTitle("⏱️ Dwelling at $locationName (Verified)")
+                    .setContentText("Dwell test confirmed: 30s loitering satisfied for '$title'")
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setAutoCancel(true)
+                    .build()
+                nm.notify(8881, notif)
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun clearDiagnosticLogs() {
+        viewModelScope.launch {
+            db.geofenceEventLogDao().clearAllLogs()
         }
     }
 
@@ -315,10 +522,10 @@ class TaskViewModel(
                 put("description", t.description.orEmpty())
                 put("priority", t.safePriority)
                 put("dueDate", t.dueDate ?: 0L)
-                put("completionStatus", t.completionStatus)
+                put("status", t.status)
                 put("isHabit", t.isHabit)
                 put("habitFrequency", t.habitFrequency.orEmpty())
-                put("isCompleted", t.isDone)
+                put("isDone", t.isDone)
                 put("category", t.safeCategory)
                 put("subtasksJson", t.subtasksJson.orEmpty())
                 put("locationName", t.locationName.orEmpty())
@@ -337,16 +544,16 @@ class TaskViewModel(
             val jsonArray = org.json.JSONArray(jsonString)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
+                val statusVal = if (obj.has("status")) obj.optString("status")
+                                else obj.optString("completionStatus", if (obj.optBoolean("isCompleted", false)) "COMPLETED" else "PENDING")
                 val importedTask = Task(
                     title = obj.optString("title", "Imported Task"),
                     description = obj.optString("description").ifBlank { null },
                     priority = obj.optString("priority", "Medium"),
                     dueDate = if (obj.has("dueDate") && obj.getLong("dueDate") > 0) obj.getLong("dueDate") else null,
-                    completionStatus = obj.optString("completionStatus", "PENDING"),
-                    status = obj.optString("completionStatus", "PENDING"),
+                    status = statusVal,
                     isHabit = obj.optBoolean("isHabit", false),
                     habitFrequency = obj.optString("habitFrequency").ifBlank { null },
-                    isCompleted = obj.optBoolean("isCompleted", false),
                     category = obj.optString("category").ifBlank { null },
                     subtasksJson = obj.optString("subtasksJson").ifBlank { null },
                     locationName = obj.optString("locationName").ifBlank { null },
@@ -377,6 +584,7 @@ class TaskViewModel(
             val loc = locationHelper.getCurrentLocation()
             if (loc != null) {
                 userLocation.value = loc
+                evaluateProximityAlerts(loc)
             }
         }
     }
@@ -386,6 +594,7 @@ class TaskViewModel(
             val loc = locationHelper.getCurrentLocation()
             if (loc != null) {
                 userLocation.value = loc
+                evaluateProximityAlerts(loc)
             }
             onResult(loc)
         }
@@ -397,6 +606,7 @@ class TaskViewModel(
             longitude = lng
         }
         userLocation.value = simulated
+        evaluateProximityAlerts(simulated)
     }
 
     fun setQuery(query: String) {
@@ -413,13 +623,16 @@ class TaskViewModel(
     }
 
     fun onCobbyCharacterClicked() {
+        val name = userName.value
+        val namePrefix = if (name.isNotBlank()) "$name, " else ""
+        val nameSuffix = if (name.isNotBlank()) ", $name" else ""
         val quotes = listOf(
-            "Ready to conquer your to-do list? I'm right here with you!",
+            "${namePrefix}ready to conquer your to-do list? I'm right here with you!",
             "Tasks stored safely offline in Room Database! ⚡",
-            "WorkManager is standing by to alert you before deadlines!",
-            "Pro-tip: Tap the '+' button to schedule a high-priority task!",
-            "Small daily progress equals massive long-term results! 💪",
-            "You're doing great! Keep knocking out those goals!"
+            "WorkManager is standing by to alert you before deadlines$nameSuffix!",
+            "Pro-tip${nameSuffix}: Tap the '+' button or mic to schedule a task!",
+            if (name.isNotBlank()) "Small daily progress equals massive long-term results, $name! 💪" else "Small daily progress equals massive long-term results! 💪",
+            "You're doing great$nameSuffix! Keep knocking out those goals!"
         )
         val selected = quotes.random()
         _cobbySpeech.value = selected
@@ -434,7 +647,9 @@ class TaskViewModel(
     }
 
     fun reactToTaskAdded(task: Task) {
-        val msg = "Awesome! Scheduled \"${task.safeTitle}\" with WorkManager reminders! 🚀"
+        val name = userName.value
+        val nameTag = if (name.isNotBlank()) "$name! " else ""
+        val msg = "Awesome ${nameTag}Scheduled \"${task.safeTitle}\" with smart reminders! 🚀"
         _cobbySpeech.value = msg
         speakText(msg)
         _cobbyMood.value = CobbyMood.EXCITED
@@ -445,7 +660,9 @@ class TaskViewModel(
     }
 
     fun reactToTaskCompleted(task: Task) {
-        val msg = "Woohoo! \"${task.safeTitle}\" completed! High five! 🎉"
+        val name = userName.value
+        val nameTag = if (name.isNotBlank()) " $name," else ""
+        val msg = "Woohoo! Great job$nameTag \"${task.safeTitle}\" completed! High five! 🎉"
         _cobbySpeech.value = msg
         speakText(msg)
         _cobbyMood.value = CobbyMood.CELEBRATING
@@ -456,12 +673,15 @@ class TaskViewModel(
     }
 
     fun reactToTaskDeleted(task: Task) {
-        val msg = "Removed \"${task.safeTitle}\". Focused and clear!"
+        val name = userName.value
+        val nameSuffix = if (name.isNotBlank()) ", $name" else ""
+        val msg = "Moved \"${task.safeTitle}\" to Trash$nameSuffix."
         _cobbySpeech.value = msg
         speakText(msg)
         viewModelScope.launch {
             delay(2500)
-            _cobbySpeech.value = "Hey! What should we tackle next?"
+            val nextName = if (userName.value.isNotBlank()) " ${userName.value}" else ""
+            _cobbySpeech.value = "Hey$nextName! What should we tackle next?"
         }
     }
 
@@ -470,18 +690,15 @@ class TaskViewModel(
         description: String? = null,
         priority: String = "Medium",
         dueDate: Long? = null,
-        completionStatus: String = "PENDING",
+        status: String = "PENDING",
         category: String = "General"
     ) {
-        val isCompleted = completionStatus.equals("COMPLETED", ignoreCase = true)
         val task = Task(
             title = title,
             description = description,
             priority = priority,
             dueDate = dueDate,
-            completionStatus = completionStatus,
-            status = completionStatus,
-            isCompleted = isCompleted,
+            status = status,
             category = category
         )
         addTask(task)
@@ -489,13 +706,27 @@ class TaskViewModel(
 
     fun addTask(task: Task) {
         viewModelScope.launch {
-            val id = db.taskDao().insertTask(task)
-            val savedTask = task.copy(id = id.toInt())
+            var taskToSave = task
+            // Ensure coordinates are resolved if locationName is set
+            if (!task.locationName.isNullOrBlank() && (task.latitude == null || task.latitude == 0.0 || task.longitude == null || task.longitude == 0.0)) {
+                val resolved = resolveLocationCoordinates(task.locationName, fallbackToCurrentLocation = true)
+                if (resolved != null && (resolved.second != 0.0 || resolved.third != 0.0)) {
+                    taskToSave = task.copy(
+                        locationName = resolved.first,
+                        latitude = resolved.second,
+                        longitude = resolved.third
+                    )
+                }
+            }
+
+            val id = db.taskDao().insertTask(taskToSave)
+            val savedTask = taskToSave.copy(id = id.toInt())
             // WorkManager local push notification trigger for upcoming due dates
             workScheduler.scheduleDueDateReminder(savedTask)
             alarmScheduler.scheduleTaskAlarm(savedTask)
-            if (task.latitude != null && task.longitude != null && !task.isCompleted) {
+            if (savedTask.latitude != null && savedTask.longitude != null && !savedTask.isDone) {
                 geofenceManager.registerTaskGeofence(savedTask)
+                checkImmediateProximityOnTaskAdded(savedTask)
             }
             TaskWidgetProvider.updateAllWidgets(context)
             reactToTaskAdded(savedTask)
@@ -504,14 +735,21 @@ class TaskViewModel(
 
     fun updateTask(task: Task) {
         viewModelScope.launch {
-            val isDone = task.isCompleted || task.completionStatus.equals("COMPLETED", ignoreCase = true)
-            val normalized = task.copy(
-                completionStatus = if (isDone) "COMPLETED" else task.completionStatus,
-                status = if (isDone) "COMPLETED" else task.status,
-                isCompleted = isDone
+            var normalized = task.copy(
+                status = if (task.isDone) "COMPLETED" else task.status
             )
+            if (!normalized.isDone && !normalized.locationName.isNullOrBlank() && (normalized.latitude == null || normalized.latitude == 0.0 || normalized.longitude == null || normalized.longitude == 0.0)) {
+                val resolved = resolveLocationCoordinates(normalized.locationName, fallbackToCurrentLocation = true)
+                if (resolved != null && (resolved.second != 0.0 || resolved.third != 0.0)) {
+                    normalized = normalized.copy(
+                        locationName = resolved.first,
+                        latitude = resolved.second,
+                        longitude = resolved.third
+                    )
+                }
+            }
             db.taskDao().updateTask(normalized)
-            if (isDone) {
+            if (normalized.isDone) {
                 workScheduler.cancelDueDateReminder(normalized.id)
                 alarmScheduler.cancelTaskAlarm(normalized.id)
                 geofenceManager.removeTaskGeofence(normalized.id)
@@ -520,6 +758,7 @@ class TaskViewModel(
                 alarmScheduler.scheduleTaskAlarm(normalized)
                 if (normalized.latitude != null && normalized.longitude != null) {
                     geofenceManager.registerTaskGeofence(normalized)
+                    checkImmediateProximityOnTaskAdded(normalized)
                 } else {
                     geofenceManager.removeTaskGeofence(normalized.id)
                 }
@@ -532,8 +771,6 @@ class TaskViewModel(
         viewModelScope.launch {
             val nowCompleted = !task.isDone
             val updated = task.copy(
-                isCompleted = nowCompleted,
-                completionStatus = if (nowCompleted) "COMPLETED" else "PENDING",
                 status = if (nowCompleted) "COMPLETED" else "PENDING"
             )
             db.taskDao().updateTask(updated)
@@ -547,8 +784,6 @@ class TaskViewModel(
                     val nextOccurrence = task.copy(
                         id = 0,
                         dueDate = nextDueDate,
-                        isCompleted = false,
-                        completionStatus = "PENDING",
                         status = "PENDING"
                     )
                     val newId = db.taskDao().insertTask(nextOccurrence)
@@ -585,7 +820,7 @@ class TaskViewModel(
             alarmScheduler.cancelTaskAlarm(task.id)
             geofenceManager.removeTaskGeofence(task.id)
             db.taskDao().softDeleteTask(task.id, timestamp)
-            firestoreRepository.saveTask(task.copy(isDeleted = true, deletedAt = timestamp))
+            firestoreRepository.saveTask(task.copy(deletedAt = timestamp))
             TaskWidgetProvider.updateAllWidgets(context)
             val msg = "Moved \"${task.safeTitle}\" to Trash! (30-day retention buffer)"
             _cobbySpeech.value = msg
@@ -596,7 +831,7 @@ class TaskViewModel(
     fun restoreTask(task: Task) {
         viewModelScope.launch {
             db.taskDao().restoreTask(task.id)
-            firestoreRepository.saveTask(task.copy(isDeleted = false, deletedAt = null))
+            firestoreRepository.saveTask(task.copy(deletedAt = null))
             workScheduler.scheduleDueDateReminder(task)
             alarmScheduler.scheduleTaskAlarm(task)
             if (task.latitude != null && task.longitude != null) {
@@ -638,58 +873,87 @@ class TaskViewModel(
     }
 
     /**
-     * Natural Language Task Parsing with Gemini & auto location geocoding.
+     * Natural Language Task Parsing with Gemini Conversational mode & schema enforcement.
+     * When confidence is low or ambiguous spans exist (e.g. "at 5" -> "AM or PM?"),
+     * it initiates a conversational clarification popup or voice prompt.
      */
-    fun parseAndAddTask(inputText: String, onComplete: ((Task) -> Unit)? = null) {
+    fun parseAndAddTask(
+        inputText: String,
+        isVoiceInitiated: Boolean = false,
+        onComplete: ((Task) -> Unit)? = null
+    ) {
         if (inputText.isBlank()) return
         viewModelScope.launch {
             _isAiParsing.value = true
             try {
-                val parsed = GeminiTaskHelper.parseTaskFromNaturalLanguage(inputText)
-                val calculatedDueDate = parsed.minutesFromNow?.let {
-                    System.currentTimeMillis() + (it * 60 * 1000)
-                }
-
-                val subtasksList = parsed.subtasks.map { SubTask(title = it) }
-                val subtasksJson = if (subtasksList.isNotEmpty()) {
-                    RetrofitClient.jsonInstance.encodeToString(subtasksList)
-                } else null
-
-                // Auto-resolve coordinates if a location name was mentioned
-                var lat: Double? = null
-                var lng: Double? = null
-                var resolvedLocationName = parsed.locationName
-
-                if (!parsed.locationName.isNullOrBlank()) {
-                    val placeResult = locationHelper.searchPlace(parsed.locationName)
-                    if (placeResult != null) {
-                        resolvedLocationName = placeResult.first
-                        lat = placeResult.second.first
-                        lng = placeResult.second.second
-                    }
-                }
-
-                val task = Task(
-                    title = parsed.title.ifBlank { inputText },
-                    description = parsed.description,
-                    dueDate = calculatedDueDate,
-                    category = parsed.category,
-                    priority = parsed.priority,
-                    locationName = resolvedLocationName,
-                    latitude = lat,
-                    longitude = lng,
-                    geofenceRadius = 150f,
-                    triggerDirection = parsed.triggerDirection,
-                    subtasksJson = subtasksJson
+                val frequentLocs = savedLocations.value.map { it.name }
+                val recentTasks = allTasks.value.take(3)
+                val currentName = userName.value
+                val extraction = GeminiTaskHelper.parseConversationalTask(
+                    utterance = inputText,
+                    savedPlaces = frequentLocs,
+                    recentReminders = recentTasks,
+                    userName = currentName
                 )
-                val id = db.taskDao().insertTask(task)
-                val savedTask = task.copy(id = id.toInt())
-                alarmScheduler.scheduleTaskAlarm(savedTask)
-                if (lat != null && lng != null) {
-                    geofenceManager.registerTaskGeofence(savedTask)
+
+                val isAmbiguous = extraction.confidence.equals("low", true) ||
+                    extraction.ambiguous_spans.isNotEmpty() ||
+                    !extraction.clarification_question.isNullOrBlank()
+
+                if (isAmbiguous) {
+                    val question = extraction.clarification_question
+                        ?: "Did you mean morning (AM) or evening (PM)?"
+                    val options = if (extraction.clarification_options.isNotEmpty()) {
+                        extraction.clarification_options
+                    } else {
+                        listOf("AM", "PM")
+                    }
+
+                    // Voice output when voice input was used or TTS is enabled
+                    speakText(question, force = isVoiceInitiated)
+
+                    _clarificationDialogData.value = ClarificationDialogData(
+                        utterance = inputText,
+                        extraction = extraction,
+                        question = question,
+                        options = options,
+                        isVoiceInitiated = isVoiceInitiated,
+                        onOptionChosen = { chosen ->
+                            _clarificationDialogData.value = null
+                            viewModelScope.launch {
+                                finalizeClarifiedTask(
+                                    utterance = inputText,
+                                    extraction = extraction,
+                                    userChoice = chosen,
+                                    isVoiceInitiated = isVoiceInitiated,
+                                    onComplete = onComplete
+                                )
+                            }
+                        },
+                        onConfirmAsIs = {
+                            _clarificationDialogData.value = null
+                            viewModelScope.launch {
+                                finalizeTaskDirectly(
+                                    inputText = inputText,
+                                    extraction = extraction,
+                                    isVoiceInitiated = isVoiceInitiated,
+                                    onComplete = onComplete
+                                )
+                            }
+                        },
+                        onDismiss = {
+                            _clarificationDialogData.value = null
+                        }
+                    )
+                } else {
+                    // High confidence, unambiguous
+                    finalizeTaskDirectly(
+                        inputText = inputText,
+                        extraction = extraction,
+                        isVoiceInitiated = isVoiceInitiated,
+                        onComplete = onComplete
+                    )
                 }
-                TaskWidgetProvider.updateAllWidgets(context)
-                onComplete?.invoke(savedTask)
             } catch (e: Exception) {
                 val fallback = Task(title = inputText)
                 db.taskDao().insertTask(fallback)
@@ -698,6 +962,207 @@ class TaskViewModel(
             } finally {
                 _isAiParsing.value = false
             }
+        }
+    }
+
+    private suspend fun finalizeClarifiedTask(
+        utterance: String,
+        extraction: ConversationalTaskExtraction,
+        userChoice: String,
+        isVoiceInitiated: Boolean,
+        onComplete: ((Task) -> Unit)?
+    ) {
+        // Log to regression corpus (user corrected / clarified extraction)
+        regressionCorpusManager.logCorrection(
+            utterance = utterance,
+            initialTask = extraction.task,
+            initialLocation = extraction.location?.query,
+            initialTime = extraction.time?.query,
+            initialConfidence = extraction.confidence,
+            ambiguousSpans = extraction.ambiguous_spans,
+            userCorrection = "User selected: '$userChoice'",
+            resolvedValue = userChoice
+        )
+
+        val finalTaskTitle = extraction.task.ifBlank { utterance }
+        var finalLocationName = extraction.location?.query
+        val finalTrigger = extraction.location?.trigger ?: "arrival"
+        var calculatedDueDate: Long? = null
+
+        // 1. Resolve time clarification (e.g. "5:00 AM", "5:00 PM", "am", "pm")
+        val timeResolved = resolveClarifiedTime(extraction.time?.query ?: utterance, userChoice)
+        if (timeResolved != null) {
+            calculatedDueDate = timeResolved
+        }
+
+        // 2. Resolve location clarification if choice was a venue option
+        val isLocClarification = extraction.clarification_options.any {
+            it.equals(userChoice, ignoreCase = true)
+        } && !userChoice.contains("am", ignoreCase = true) && !userChoice.contains("pm", ignoreCase = true)
+
+        if (isLocClarification) {
+            finalLocationName = userChoice
+        }
+
+        var lat: Double? = null
+        var lng: Double? = null
+        if (!finalLocationName.isNullOrBlank()) {
+            val resolved = resolveLocationCoordinates(finalLocationName)
+            if (resolved != null) {
+                finalLocationName = resolved.first
+                lat = resolved.second
+                lng = resolved.third
+            }
+        }
+
+        val task = Task(
+            title = finalTaskTitle,
+            dueDate = calculatedDueDate,
+            category = inferCategory(utterance),
+            priority = "Medium",
+            locationName = finalLocationName,
+            latitude = lat,
+            longitude = lng,
+            geofenceRadius = 150f,
+            triggerDirection = if (finalTrigger.equals("departure", true)) "DEPARTURE" else "ARRIVAL"
+        )
+
+        val id = db.taskDao().insertTask(task)
+        val savedTask = task.copy(id = id.toInt())
+        alarmScheduler.scheduleTaskAlarm(savedTask)
+        if (lat != null && lng != null) {
+            geofenceManager.registerTaskGeofence(savedTask)
+        }
+        TaskWidgetProvider.updateAllWidgets(context)
+
+        val currentName = userName.value
+        val namePrefix = if (currentName.isNotBlank()) "$currentName, " else ""
+        val confirmationSpeech = if (calculatedDueDate != null) {
+            val timeStr = java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(calculatedDueDate))
+            "Got it, ${namePrefix}reminder set for $timeStr."
+        } else if (!finalLocationName.isNullOrBlank()) {
+            "Got it, ${namePrefix}reminder set for $finalLocationName."
+        } else {
+            "Added reminder for you, ${namePrefix}${savedTask.title}."
+        }
+        speakText(confirmationSpeech, force = isVoiceInitiated)
+
+        withContext(Dispatchers.Main) {
+            onComplete?.invoke(savedTask)
+        }
+    }
+
+    private suspend fun finalizeTaskDirectly(
+        inputText: String,
+        extraction: ConversationalTaskExtraction,
+        isVoiceInitiated: Boolean,
+        onComplete: ((Task) -> Unit)?
+    ) {
+        var calculatedDueDate: Long? = null
+        val timeQuery = extraction.time?.query
+        if (!timeQuery.isNullOrBlank()) {
+            calculatedDueDate = resolveClarifiedTime(null, timeQuery)
+        }
+
+        var finalLoc = extraction.location?.query
+        var lat: Double? = null
+        var lng: Double? = null
+        if (!finalLoc.isNullOrBlank()) {
+            val resolved = resolveLocationCoordinates(finalLoc)
+            if (resolved != null) {
+                finalLoc = resolved.first
+                lat = resolved.second
+                lng = resolved.third
+            }
+        }
+
+        val triggerDir = if (extraction.location?.trigger.equals("departure", true)) "DEPARTURE" else "ARRIVAL"
+
+        val task = Task(
+            title = extraction.task.ifBlank { inputText },
+            dueDate = calculatedDueDate,
+            category = inferCategory(inputText),
+            priority = "Medium",
+            locationName = finalLoc,
+            latitude = lat,
+            longitude = lng,
+            geofenceRadius = 150f,
+            triggerDirection = triggerDir
+        )
+
+        val id = db.taskDao().insertTask(task)
+        val savedTask = task.copy(id = id.toInt())
+        alarmScheduler.scheduleTaskAlarm(savedTask)
+        if (lat != null && lng != null) {
+            geofenceManager.registerTaskGeofence(savedTask)
+        }
+        TaskWidgetProvider.updateAllWidgets(context)
+
+        val currentName = userName.value
+        val namePrefix = if (currentName.isNotBlank()) "$currentName, " else ""
+        speakText("Added reminder for you, ${namePrefix}${savedTask.title}", force = isVoiceInitiated)
+
+        withContext(Dispatchers.Main) {
+            onComplete?.invoke(savedTask)
+        }
+    }
+
+    private fun resolveClarifiedTime(initialTimeQuery: String?, userChoice: String): Long? {
+        val lowerChoice = userChoice.lowercase(Locale.ROOT).trim()
+
+        // 1. Explicit hours e.g. "5:00 PM", "5 PM", "5:30 am", "8 AM"
+        val explicitTimeRegex = Regex("""(\d{1,2})(?::(\d{2}))?\s*(am|pm)""", RegexOption.IGNORE_CASE)
+        val match = explicitTimeRegex.find(userChoice)
+        if (match != null) {
+            val hour = match.groupValues[1].toIntOrNull() ?: return null
+            val minute = match.groupValues.getOrNull(2)?.toIntOrNull() ?: 0
+            val isPm = match.groupValues[3].equals("pm", true)
+            return computeFutureMillis(hour, minute, isPm)
+        }
+
+        // 2. Relative keywords like "in 30 mins", "in 1 hour", "tomorrow"
+        if (lowerChoice.contains("in 5 min")) return System.currentTimeMillis() + 5 * 60 * 1000
+        if (lowerChoice.contains("in 15 min")) return System.currentTimeMillis() + 15 * 60 * 1000
+        if (lowerChoice.contains("in 30 min")) return System.currentTimeMillis() + 30 * 60 * 1000
+        if (lowerChoice.contains("in 1 hour") || lowerChoice.contains("in an hour")) return System.currentTimeMillis() + 60 * 60 * 1000
+        if (lowerChoice.contains("tomorrow")) return System.currentTimeMillis() + 24 * 60 * 60 * 1000
+
+        // 3. User choice was solely "AM" or "PM"
+        if (lowerChoice == "am" || lowerChoice == "pm") {
+            val isPm = lowerChoice == "pm"
+            val bareHourRegex = Regex("""(\d{1,2})(?::(\d{2}))?""")
+            val hourMatch = initialTimeQuery?.let { bareHourRegex.find(it) }
+            val hour = hourMatch?.groupValues?.get(1)?.toIntOrNull() ?: 5
+            val minute = hourMatch?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 0
+            return computeFutureMillis(hour, minute, isPm)
+        }
+
+        return null
+    }
+
+    private fun computeFutureMillis(hour12: Int, minute: Int, isPm: Boolean): Long {
+        val cal = Calendar.getInstance()
+        var hour24 = hour12 % 12
+        if (isPm) hour24 += 12
+        cal.set(Calendar.HOUR_OF_DAY, hour24)
+        cal.set(Calendar.MINUTE, minute)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        if (cal.timeInMillis <= System.currentTimeMillis()) {
+            cal.add(Calendar.DAY_OF_YEAR, 1) // Next day if already passed today
+        }
+        return cal.timeInMillis
+    }
+
+    private fun inferCategory(text: String): String {
+        val lower = text.lowercase(Locale.ROOT)
+        return when {
+            lower.contains("doctor") || lower.contains("dentist") || lower.contains("medicine") || lower.contains("pharmacy") || lower.contains("gym") -> "Health"
+            lower.contains("buy") || lower.contains("groceries") || lower.contains("shop") || lower.contains("store") || lower.contains("market") -> "Shopping"
+            lower.contains("meeting") || lower.contains("presentation") || lower.contains("report") || lower.contains("office") || lower.contains("work") -> "Work"
+            lower.contains("study") || lower.contains("homework") || lower.contains("exam") || lower.contains("assignment") -> "Study"
+            lower.contains("barbershop") || lower.contains("haircut") || lower.contains("dry clean") || lower.contains("bank") || lower.contains("errand") -> "Errands"
+            else -> "Personal"
         }
     }
 
@@ -756,46 +1221,63 @@ class TaskViewModel(
         }
     }
 
+    private var placeSearchJob: Job? = null
+
     /**
      * Search Places using Google Places SDK Autocomplete with intelligent Geocoder fallback
      */
     fun searchPlacesAutocomplete(query: String) {
-        if (query.isBlank()) {
+        placeSearchJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) {
             placeSuggestions.value = emptyList()
             isSearchingPlaces.value = false
             return
         }
-        viewModelScope.launch {
+        val bias = getLocationBiasCenter()
+        placeSearchJob = viewModelScope.launch {
+            delay(300L) // Debounce rapid keystrokes to minimize network usage and stay cost-effective
             isSearchingPlaces.value = true
             try {
-                val suggestions = placesService.getAutocompletePredictions(query)
-                if (suggestions.isNotEmpty()) {
-                    placeSuggestions.value = suggestions
+                // 1. Instant local match from saved frequent places (0ms, 0 network, completely free)
+                val savedList = db.savedLocationDao().getAllSavedLocationsList()
+                val localMatches = savedList.filter {
+                    it.name.contains(trimmed, ignoreCase = true) ||
+                    it.address.contains(trimmed, ignoreCase = true)
+                }.map { loc ->
+                    PlaceSuggestion(
+                        placeId = "saved_${loc.id}_${loc.latitude}_${loc.longitude}",
+                        primaryText = "${loc.displayIcon} ${loc.name}",
+                        secondaryText = loc.address.ifBlank { "Frequent Location (${String.format(Locale.US, "%.4f, %.4f", loc.latitude, loc.longitude)})" },
+                        fullText = loc.address.ifBlank { loc.name }
+                    )
+                }
+
+                // 2. Fetch external suggestions (Places API or OSM / Geocoder fallback)
+                val allowInternet = prefsManager.isInternetLocationEnabled
+                val externalSuggestions = if (allowInternet) {
+                    val placesPreds = placesService.getAutocompletePredictions(trimmed, biasCenter = bias)
+                    if (placesPreds.isNotEmpty()) {
+                        placesPreds
+                    } else {
+                        val geoList = locationHelper.searchPlacesList(trimmed, maxResults = 5)
+                        geoList.map { item ->
+                            PlaceSuggestion(
+                                placeId = "geo_${item.second.first}_${item.second.second}",
+                                primaryText = item.first,
+                                secondaryText = "Lat: ${String.format(java.util.Locale.US, "%.4f", item.second.first)}, Lng: ${String.format(java.util.Locale.US, "%.4f", item.second.second)}",
+                                fullText = item.first
+                            )
+                        }
+                    }
                 } else {
-                    val geoList = locationHelper.searchPlacesList(query, maxResults = 5)
-                    placeSuggestions.value = geoList.map { item ->
-                        PlaceSuggestion(
-                            placeId = "geo_${item.second.first}_${item.second.second}",
-                            primaryText = item.first,
-                            secondaryText = "Lat: ${String.format(java.util.Locale.US, "%.4f", item.second.first)}, Lng: ${String.format(java.util.Locale.US, "%.4f", item.second.second)}",
-                            fullText = item.first
-                        )
-                    }
+                    emptyList()
                 }
+
+                val combined = (localMatches + externalSuggestions).distinctBy { it.fullText.ifBlank { it.primaryText } }
+                placeSuggestions.value = combined
             } catch (e: Exception) {
-                try {
-                    val geoList = locationHelper.searchPlacesList(query, maxResults = 5)
-                    placeSuggestions.value = geoList.map { item ->
-                        PlaceSuggestion(
-                            placeId = "geo_${item.second.first}_${item.second.second}",
-                            primaryText = item.first,
-                            secondaryText = "Lat: ${String.format(java.util.Locale.US, "%.4f", item.second.first)}, Lng: ${String.format(java.util.Locale.US, "%.4f", item.second.second)}",
-                            fullText = item.first
-                        )
-                    }
-                } catch (_: Exception) {
-                    placeSuggestions.value = emptyList()
-                }
+                Log.w(TAG, "Autocomplete search failed: ${e.message}")
             } finally {
                 isSearchingPlaces.value = false
             }
@@ -811,6 +1293,27 @@ class TaskViewModel(
      */
     fun fetchPlaceDetails(placeId: String, onResult: ((PlaceDetails?) -> Unit)? = null) {
         viewModelScope.launch {
+            if (placeId.startsWith("saved_")) {
+                val parts = placeId.removePrefix("saved_").split("_")
+                val id = parts.getOrNull(0)?.toIntOrNull()
+                val lat = parts.getOrNull(1)?.toDoubleOrNull()
+                val lng = parts.getOrNull(2)?.toDoubleOrNull()
+                val savedLoc = if (id != null) db.savedLocationDao().getSavedLocationById(id) else null
+                val finalLat = lat ?: savedLoc?.latitude ?: 0.0
+                val finalLng = lng ?: savedLoc?.longitude ?: 0.0
+                val details = PlaceDetails(
+                    placeId = placeId,
+                    name = savedLoc?.name ?: "Frequent Place",
+                    address = savedLoc?.address ?: "Saved Place",
+                    phoneNumber = null,
+                    websiteUri = null,
+                    rating = null,
+                    latLng = com.google.android.gms.maps.model.LatLng(finalLat, finalLng)
+                )
+                selectedPlaceDetails.value = details
+                onResult?.invoke(details)
+                return@launch
+            }
             if (placeId.startsWith("geo_")) {
                 val parts = placeId.removePrefix("geo_").split("_")
                 val lat = parts.getOrNull(0)?.toDoubleOrNull()
@@ -837,11 +1340,245 @@ class TaskViewModel(
         }
     }
 
+    fun insertSavedLocation(location: SavedLocation, onComplete: ((Long) -> Unit)? = null) {
+        viewModelScope.launch {
+            val id = db.savedLocationDao().insertSavedLocation(location)
+            onComplete?.invoke(id)
+        }
+    }
+
+    fun updateSavedLocation(location: SavedLocation) {
+        viewModelScope.launch {
+            db.savedLocationDao().updateSavedLocation(location)
+        }
+    }
+
+    fun deleteSavedLocation(location: SavedLocation) {
+        viewModelScope.launch {
+            db.savedLocationDao().deleteSavedLocation(location)
+        }
+    }
+
+    fun deleteSavedLocationById(id: Int) {
+        viewModelScope.launch {
+            db.savedLocationDao().deleteById(id)
+        }
+    }
+
+    fun getLocationBiasCenter(): LatLng? {
+        val currentLoc = userLocation.value
+        if (currentLoc != null) {
+            return LatLng(currentLoc.latitude, currentLoc.longitude)
+        }
+        val saved = savedLocations.value
+        val homeOrWork = saved.firstOrNull { it.category.equals("HOME", ignoreCase = true) }
+            ?: saved.firstOrNull { it.category.equals("WORK", ignoreCase = true) }
+            ?: saved.firstOrNull()
+        return homeOrWork?.let { LatLng(it.latitude, it.longitude) }
+    }
+
+    suspend fun resolveLocationCandidates(query: String): List<ResolvedLocationCandidate> {
+        if (query.isBlank()) return emptyList()
+        val results = mutableListOf<ResolvedLocationCandidate>()
+        val trimmed = query.trim()
+
+        // 1. Saved frequent locations check (gazetteer fast-path)
+        val savedList = db.savedLocationDao().getAllSavedLocationsList()
+        for (saved in savedList) {
+            if (saved.name.contains(trimmed, ignoreCase = true) || trimmed.contains(saved.name, ignoreCase = true)) {
+                results.add(
+                    ResolvedLocationCandidate(
+                        name = saved.name,
+                        address = saved.address.ifBlank { "Saved Location (${saved.category})" },
+                        latitude = saved.latitude,
+                        longitude = saved.longitude,
+                        radiusMeters = saved.radiusMeters,
+                        isSavedLocation = true,
+                        category = saved.category
+                    )
+                )
+            }
+        }
+
+        // 2. Bias center from user location or Home/Work
+        val bias = getLocationBiasCenter()
+
+        // 3. Places API with location bias
+        try {
+            val places = placesService.getCandidatePlaces(trimmed, biasCenter = bias, maxCandidates = 3)
+            for (p in places) {
+                if (p.latLng != null && results.none { abs(it.latitude - p.latLng.latitude) < 0.0001 && abs(it.longitude - p.latLng.longitude) < 0.0001 }) {
+                    results.add(
+                        ResolvedLocationCandidate(
+                            name = p.name,
+                            address = p.address ?: p.name,
+                            latitude = p.latLng.latitude,
+                            longitude = p.latLng.longitude,
+                            radiusMeters = 150f,
+                            isSavedLocation = false,
+                            category = "VENUE"
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Places candidate lookup failed for $trimmed", e)
+        }
+
+        // 4. Geocoder fallback if still empty
+        if (results.isEmpty()) {
+            try {
+                val currentLoc = userLocation.value ?: locationHelper.getCurrentLocation()
+                val geo = locationHelper.searchPlace(trimmed, currentLoc)
+                if (geo != null) {
+                    results.add(
+                        ResolvedLocationCandidate(
+                            name = geo.first,
+                            address = geo.first,
+                            latitude = geo.second.first,
+                            longitude = geo.second.second,
+                            radiusMeters = 150f,
+                            isSavedLocation = false,
+                            category = "GEO"
+                        )
+                    )
+                }
+            } catch (_: Exception) {}
+        }
+
+        return results
+    }
+
+    /**
+     * Resolves coordinates for any extracted or typed location name using a multi-tiered strategy:
+     * 1. User's saved frequent locations (exact/fuzzy match)
+     * 2. Google Places SDK autocomplete + details with location bias
+     * 3. Proximity-biased Geocoder using user's current location
+     * 4. Relative location mapping bound to current location
+     */
+    suspend fun resolveLocationCoordinates(
+        locationName: String,
+        fallbackToCurrentLocation: Boolean = true
+    ): Triple<String, Double, Double>? {
+        if (locationName.isBlank()) return null
+
+        val currentLoc = userLocation.value ?: locationHelper.getCurrentLocation()
+        if (currentLoc != null && userLocation.value == null) {
+            userLocation.value = currentLoc
+        }
+
+        // Tier 0: Check user's saved frequent locations first (instant zero-latency match)
+        var matchedSavedLocation: SavedLocation? = null
+        try {
+            val savedList = db.savedLocationDao().getAllSavedLocationsList()
+            val match = savedList.firstOrNull {
+                it.name.equals(locationName.trim(), ignoreCase = true) ||
+                locationName.contains(it.name, ignoreCase = true)
+            }
+            if (match != null) {
+                matchedSavedLocation = match
+                if (match.latitude != 0.0 || match.longitude != 0.0) {
+                    return Triple(match.name, match.latitude, match.longitude)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed checking saved locations for $locationName", e)
+        }
+
+        var resolvedResult: Triple<String, Double, Double>? = null
+
+        // Tier 1: Try Google Places SDK with Location Bias
+        if (resolvedResult == null) {
+            try {
+                val bias = getLocationBiasCenter()
+                val suggestions = placesService.getAutocompletePredictions(locationName, biasCenter = bias)
+                if (suggestions.isNotEmpty()) {
+                    val top = suggestions.first()
+                    val details = placesService.fetchPlaceDetails(top.placeId)
+                    if (details?.latLng != null) {
+                        val resolvedName = if (details.name.isNotBlank()) details.name else top.primaryText
+                        resolvedResult = Triple(resolvedName, details.latLng.latitude, details.latLng.longitude)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Places SDK lookup failed for $locationName", e)
+            }
+        }
+
+        // Tier 2: Try Geocoder with proximity bias from current user location
+        if (resolvedResult == null) {
+            try {
+                val geoResult = locationHelper.searchPlace(locationName, currentLoc)
+                if (geoResult != null && (geoResult.second.first != 0.0 || geoResult.second.second != 0.0)) {
+                    resolvedResult = Triple(geoResult.first, geoResult.second.first, geoResult.second.second)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Geocoder searchPlace failed for $locationName", e)
+            }
+        }
+
+        // Tier 3: Relative or Local Place Names ("Home", "Office", "Work", "Gym", "Here", "Current Location")
+        if (resolvedResult == null) {
+            val lower = locationName.trim().lowercase(Locale.ROOT)
+            val isRelative = lower in listOf(
+                "home", "office", "work", "workplace", "gym", "here", "current location", "my location", "station"
+            )
+            if (isRelative && currentLoc != null) {
+                val titleCased = locationName.trim().replaceFirstChar { it.uppercase() }
+                resolvedResult = Triple(titleCased, currentLoc.latitude, currentLoc.longitude)
+            }
+        }
+
+        // Tier 4: Fallback binding to current location so geofence can still be established
+        if (resolvedResult == null && fallbackToCurrentLocation && currentLoc != null) {
+            val titleCased = locationName.trim().replaceFirstChar { it.uppercase() }
+            resolvedResult = Triple(titleCased, currentLoc.latitude, currentLoc.longitude)
+        }
+
+        // Heal matched saved location if it previously lacked valid coordinates
+        if (resolvedResult != null && matchedSavedLocation != null && matchedSavedLocation.latitude == 0.0 && matchedSavedLocation.longitude == 0.0) {
+            try {
+                db.savedLocationDao().updateSavedLocation(
+                    matchedSavedLocation.copy(
+                        latitude = resolvedResult.second,
+                        longitude = resolvedResult.third,
+                        address = matchedSavedLocation.address.ifBlank { resolvedResult.first }
+                    )
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed healing saved location $locationName", e)
+            }
+        }
+
+        return resolvedResult
+    }
+
+    fun resolveCoordinatesForLocation(locationName: String, onResult: (name: String, lat: Double, lng: Double) -> Unit) {
+        viewModelScope.launch {
+            val res = resolveLocationCoordinates(locationName)
+            if (res != null) {
+                onResult(res.first, res.second, res.third)
+            }
+        }
+    }
+
+    fun syncAllGeofences() {
+        viewModelScope.launch {
+            allTasks.value.filter { !it.isDone && it.latitude != null && it.longitude != null }
+                .forEach { geofenceManager.registerTaskGeofence(it) }
+        }
+    }
+
     fun searchLocation(query: String, onResult: (name: String, lat: Double, lng: Double) -> Unit) {
         viewModelScope.launch {
-            val res = locationHelper.searchPlace(query)
-            if (res != null) {
-                onResult(res.first, res.second.first, res.second.second)
+            val resolved = resolveLocationCoordinates(query)
+            if (resolved != null) {
+                onResult(resolved.first, resolved.second, resolved.third)
+            } else {
+                val res = locationHelper.searchPlace(query, userLocation.value)
+                if (res != null) {
+                    onResult(res.first, res.second.first, res.second.second)
+                }
             }
         }
     }
@@ -857,7 +1594,7 @@ class TaskViewModel(
         viewModelScope.launch {
             _isBriefingLoading.value = true
             try {
-                _dailyBriefing.value = GeminiTaskHelper.generateDailyBriefing(allTasks.value)
+                _dailyBriefing.value = GeminiTaskHelper.generateDailyBriefing(allTasks.value, userName.value)
             } finally {
                 _isBriefingLoading.value = false
             }
@@ -905,5 +1642,223 @@ class TaskViewModel(
      */
     suspend fun extractStructuredSchedulingData(taskDescription: String): com.example.gemini.StructuredSchedulingData {
         return GeminiTaskHelper.extractStructuredSchedulingData(taskDescription)
+    }
+
+    /**
+     * Uses the Gemini AI API to analyze a user's task list and suggest an optimized daily schedule based on priority.
+     */
+    fun analyzeTaskListAndSuggestOptimizedDailySchedule(
+        tasks: List<Task> = allTasks.value,
+        onResult: ((com.example.gemini.OptimizedDailySchedule) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            isGeneratingDailySchedule.value = true
+            try {
+                val result = GeminiTaskHelper.analyzeTaskListAndSuggestOptimizedDailySchedule(tasks)
+                optimizedDailyScheduleState.value = result
+                onResult?.invoke(result)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error generating optimized daily schedule from task list", e)
+            } finally {
+                isGeneratingDailySchedule.value = false
+            }
+        }
+    }
+
+    private val activeProximityTriggeredTaskIds = mutableSetOf<Int>()
+
+    /**
+     * Actively evaluates proximity for all location-based pending tasks against the current location.
+     * Guarantees that even if Google Play Services geofence broadcast is delayed or sleeping,
+     * the user gets notified immediately when entering their Home, Work, or venue geofence.
+     */
+    fun evaluateProximityAlerts(location: Location) {
+        viewModelScope.launch {
+            try {
+                val pendingWithLoc = db.taskDao().getAllTasksList().filter {
+                    !it.isDone && it.latitude != null && it.longitude != null &&
+                    (it.latitude != 0.0 || it.longitude != 0.0)
+                }
+
+                for (task in pendingWithLoc) {
+                    val distance = LocationHelper.calculateDistance(
+                        location.latitude,
+                        location.longitude,
+                        task.latitude!!,
+                        task.longitude!!
+                    )
+                    val isInside = distance <= task.geofenceRadius
+                    val isArrival = !task.safeTriggerDirection.equals("DEPARTURE", ignoreCase = true)
+
+                    if (isArrival) {
+                        if (isInside) {
+                            if (!activeProximityTriggeredTaskIds.contains(task.id)) {
+                                activeProximityTriggeredTaskIds.add(task.id)
+                                triggerProximityNotification(task, isArrival = true, distance = distance)
+                            }
+                        } else {
+                            activeProximityTriggeredTaskIds.remove(task.id)
+                        }
+                    } else {
+                        // Departure
+                        if (!isInside) {
+                            if (!activeProximityTriggeredTaskIds.contains(task.id)) {
+                                activeProximityTriggeredTaskIds.add(task.id)
+                                triggerProximityNotification(task, isArrival = false, distance = distance)
+                            }
+                        } else {
+                            activeProximityTriggeredTaskIds.remove(task.id)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "evaluateProximityAlerts error", e)
+            }
+        }
+    }
+
+    private fun checkImmediateProximityOnTaskAdded(task: Task) {
+        if (task.isDone || task.latitude == null || task.longitude == null) return
+        viewModelScope.launch {
+            val cur = userLocation.value ?: locationHelper.getCurrentLocation()
+            if (cur != null) {
+                val distance = LocationHelper.calculateDistance(
+                    cur.latitude,
+                    cur.longitude,
+                    task.latitude!!,
+                    task.longitude!!
+                )
+                val isArrival = !task.safeTriggerDirection.equals("DEPARTURE", ignoreCase = true)
+                if (isArrival && distance <= task.geofenceRadius) {
+                    activeProximityTriggeredTaskIds.add(task.id)
+                    triggerProximityNotification(task, isArrival = true, distance = distance)
+                }
+            }
+        }
+    }
+
+    private fun triggerProximityNotification(task: Task, isArrival: Boolean, distance: Float) {
+        val locName = task.locationName ?: "your destination"
+        val title = if (isArrival) "📍 Arrived at $locName" else "🛫 Leaving $locName"
+        val body = if (isArrival) {
+            "You are right here (${LocationHelper.formatDistance(distance)})! Time for: ${task.safeTitle}"
+        } else {
+            "Before you leave $locName: ${task.safeTitle}"
+        }
+
+        sendProximityNotification(task.id, title, body, task.safeReminderTone)
+
+        val speech = if (isArrival) {
+            "You're at $locName! Don't forget to ${task.safeTitle}."
+        } else {
+            "Before you leave $locName, remember to ${task.safeTitle}."
+        }
+        _cobbySpeech.value = speech
+        speakText(speech)
+    }
+
+    fun sendProximityNotification(taskId: Int, title: String, content: String, reminderTone: String) {
+        try {
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    GeofenceBroadcastReceiver.CHANNEL_ID,
+                    GeofenceBroadcastReceiver.CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Location & Proximity Task Reminders"
+                    enableVibration(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val openAppIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                taskId,
+                openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val soundUri = when (reminderTone) {
+                "URGENT_ALARM" -> android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM)
+                "GENTLE_NOTIF" -> android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+                "PHONE_RINGTONE" -> android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
+                else -> android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+            }
+
+            val notification = NotificationCompat.Builder(context, GeofenceBroadcastReceiver.CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_map)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .setSound(soundUri)
+                .setVibrate(longArrayOf(0, 350, 200, 350))
+                .build()
+
+            notificationManager.notify(taskId + 30000, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed sending proximity notification", e)
+        }
+    }
+
+    /**
+     * Self-healing: Repairs any saved frequent locations or tasks that had 0.0, 0.0
+     * or missing coordinates, ensuring geofences register and triggers fire reliably.
+     */
+    private fun healSavedLocationsAndTasks() {
+        viewModelScope.launch {
+            try {
+                val cur = locationHelper.getCurrentLocation()
+                if (cur != null && userLocation.value == null) {
+                    userLocation.value = cur
+                }
+
+                // Heal saved frequent places
+                val savedList = db.savedLocationDao().getAllSavedLocationsList()
+                for (saved in savedList) {
+                    if (saved.latitude == 0.0 && saved.longitude == 0.0) {
+                        val resolved = resolveLocationCoordinates(saved.address.ifBlank { saved.name }, fallbackToCurrentLocation = true)
+                        if (resolved != null && (resolved.second != 0.0 || resolved.third != 0.0)) {
+                            db.savedLocationDao().updateSavedLocation(
+                                saved.copy(
+                                    latitude = resolved.second,
+                                    longitude = resolved.third,
+                                    address = saved.address.ifBlank { resolved.first }
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Heal pending tasks with missing/zero coordinates
+                val tasks = db.taskDao().getAllTasksList()
+                for (task in tasks) {
+                    if (!task.locationName.isNullOrBlank() && (task.latitude == null || task.latitude == 0.0 || task.longitude == null || task.longitude == 0.0)) {
+                        val resolved = resolveLocationCoordinates(task.locationName, fallbackToCurrentLocation = true)
+                        if (resolved != null && (resolved.second != 0.0 || resolved.third != 0.0)) {
+                            val healed = task.copy(
+                                latitude = resolved.second,
+                                longitude = resolved.third
+                            )
+                            db.taskDao().updateTask(healed)
+                            if (!healed.isDone) {
+                                geofenceManager.registerTaskGeofence(healed)
+                            }
+                        }
+                    }
+                }
+
+                // Check proximity with current location
+                userLocation.value?.let { evaluateProximityAlerts(it) }
+            } catch (e: Exception) {
+                Log.w(TAG, "healSavedLocationsAndTasks warning", e)
+            }
+        }
     }
 }

@@ -6,10 +6,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -35,8 +37,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.data.Task
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -50,6 +54,7 @@ fun TaskFormScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val allTasks by viewModel.allTasks.collectAsState()
     val existingTask = remember(taskId, allTasks) {
         if (taskId != null) allTasks.find { it.id == taskId } else null
@@ -76,6 +81,7 @@ fun TaskFormScreen(
 
     val placeSuggestions by viewModel.placeSuggestions.collectAsState()
     val isSearchingPlaces by viewModel.isSearchingPlaces.collectAsState()
+    val savedLocations by viewModel.savedLocations.collectAsState()
 
     var hasLocationPermission by remember {
         mutableStateOf(
@@ -134,12 +140,11 @@ fun TaskFormScreen(
                                     habitFrequency = if (isHabit) habitFrequency else null,
                                     category = category,
                                     dueDate = dueDateMs,
-                                    locationName = locationName.trim().ifBlank { null },
+                                    locationName = locationName.trim().ifBlank { locationSearchQuery.trim() }.ifBlank { null },
                                     latitude = latitude,
                                     longitude = longitude,
                                     geofenceRadius = geofenceRadius,
-                                    reminderTone = reminderTone,
-                                    isCompleted = status == "COMPLETED"
+                                    reminderTone = reminderTone
                                 )
                                 if (isEditing) {
                                     viewModel.updateTask(taskToSave)
@@ -687,6 +692,48 @@ fun TaskFormScreen(
                                 .testTag("form_location_search_input"),
                             shape = RoundedCornerShape(12.dp)
                         )
+
+                        // Frequent Places Quick Chips
+                        if (savedLocations.isNotEmpty()) {
+                            Column {
+                                Text(
+                                    text = "Frequent Places:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    savedLocations.forEach { loc ->
+                                        val isSelected = locationName.equals(loc.name, ignoreCase = true)
+                                        FilterChip(
+                                            selected = isSelected,
+                                            onClick = {
+                                                locationName = loc.name
+                                                locationSearchQuery = loc.address.ifBlank { loc.name }
+                                                geofenceRadius = loc.radiusMeters
+                                                if (loc.latitude != 0.0 || loc.longitude != 0.0) {
+                                                    latitude = loc.latitude
+                                                    longitude = loc.longitude
+                                                } else {
+                                                    coroutineScope.launch {
+                                                        val resolved = viewModel.resolveLocationCoordinates(loc.address.ifBlank { loc.name }, fallbackToCurrentLocation = true)
+                                                        if (resolved != null) {
+                                                            latitude = resolved.second
+                                                            longitude = resolved.third
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            label = { Text("${loc.displayIcon} ${loc.name}", fontSize = 12.sp) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
                         // Autocomplete Suggestions List
                         if (placeSuggestions.isNotEmpty()) {

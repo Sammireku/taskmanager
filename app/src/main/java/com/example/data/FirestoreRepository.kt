@@ -40,11 +40,9 @@ class FirestoreRepository {
                 "description" to task.description,
                 "priority" to task.safePriority,
                 "dueDate" to task.dueDate,
-                "completionStatus" to task.completionStatus,
                 "status" to task.safeStatus,
                 "isHabit" to task.isHabit,
                 "habitFrequency" to task.habitFrequency,
-                "isCompleted" to task.isDone,
                 "category" to task.safeCategory,
                 "subtasksJson" to task.subtasksJson,
                 "locationName" to task.locationName,
@@ -53,7 +51,6 @@ class FirestoreRepository {
                 "geofenceRadius" to task.geofenceRadius,
                 "triggerDirection" to task.safeTriggerDirection,
                 "reminderTone" to task.safeReminderTone,
-                "isDeleted" to task.isDeleted,
                 "deletedAt" to task.deletedAt
             )
             userDoc.set(taskMap, SetOptions.merge()).await()
@@ -80,10 +77,9 @@ class FirestoreRepository {
                 val description = doc.getString("description")
                 val priority = doc.getString("priority") ?: "Medium"
                 val dueDate = doc.getLong("dueDate")
-                val completionStatus = doc.getString("completionStatus") ?: "PENDING"
+                val status = doc.getString("status") ?: doc.getString("completionStatus") ?: "PENDING"
                 val isHabit = doc.getBoolean("isHabit") ?: false
                 val habitFrequency = doc.getString("habitFrequency")
-                val isCompleted = doc.getBoolean("isCompleted") ?: false
                 val category = doc.getString("category")
                 val subtasksJson = doc.getString("subtasksJson")
                 val locationName = doc.getString("locationName")
@@ -92,8 +88,7 @@ class FirestoreRepository {
                 val geofenceRadius = doc.getDouble("geofenceRadius")?.toFloat() ?: 150f
                 val triggerDirection = doc.getString("triggerDirection") ?: "ARRIVAL"
                 val reminderTone = doc.getString("reminderTone") ?: "DEFAULT"
-                val isDeleted = doc.getBoolean("isDeleted") ?: false
-                val deletedAt = doc.getLong("deletedAt")
+                val deletedAt = doc.getLong("deletedAt") ?: if (doc.getBoolean("isDeleted") == true) System.currentTimeMillis() else null
 
                 remoteList.add(
                     Task(
@@ -102,11 +97,9 @@ class FirestoreRepository {
                         description = description,
                         priority = priority,
                         dueDate = dueDate,
-                        completionStatus = completionStatus,
-                        status = completionStatus,
+                        status = status,
                         isHabit = isHabit,
                         habitFrequency = habitFrequency,
-                        isCompleted = isCompleted,
                         category = category,
                         subtasksJson = subtasksJson,
                         locationName = locationName,
@@ -115,7 +108,6 @@ class FirestoreRepository {
                         geofenceRadius = geofenceRadius,
                         triggerDirection = triggerDirection,
                         reminderTone = reminderTone,
-                        isDeleted = isDeleted,
                         deletedAt = deletedAt
                     )
                 )
@@ -150,10 +142,9 @@ class FirestoreRepository {
                         val description = doc.getString("description")
                         val priority = doc.getString("priority") ?: "Medium"
                         val dueDate = doc.getLong("dueDate")
-                        val completionStatus = doc.getString("completionStatus") ?: "PENDING"
+                        val status = doc.getString("status") ?: doc.getString("completionStatus") ?: "PENDING"
                         val isHabit = doc.getBoolean("isHabit") ?: false
                         val habitFrequency = doc.getString("habitFrequency")
-                        val isCompleted = doc.getBoolean("isCompleted") ?: false
                         val category = doc.getString("category")
                         val subtasksJson = doc.getString("subtasksJson")
                         val locationName = doc.getString("locationName")
@@ -162,8 +153,7 @@ class FirestoreRepository {
                         val geofenceRadius = doc.getDouble("geofenceRadius")?.toFloat() ?: 150f
                         val triggerDirection = doc.getString("triggerDirection") ?: "ARRIVAL"
                         val reminderTone = doc.getString("reminderTone") ?: "DEFAULT"
-                        val isDeleted = doc.getBoolean("isDeleted") ?: false
-                        val deletedAt = doc.getLong("deletedAt")
+                        val deletedAt = doc.getLong("deletedAt") ?: if (doc.getBoolean("isDeleted") == true) System.currentTimeMillis() else null
 
                         tasks.add(
                             Task(
@@ -172,11 +162,9 @@ class FirestoreRepository {
                                 description = description,
                                 priority = priority,
                                 dueDate = dueDate,
-                                completionStatus = completionStatus,
-                                status = completionStatus,
+                                status = status,
                                 isHabit = isHabit,
                                 habitFrequency = habitFrequency,
-                                isCompleted = isCompleted,
                                 category = category,
                                 subtasksJson = subtasksJson,
                                 locationName = locationName,
@@ -185,7 +173,6 @@ class FirestoreRepository {
                                 geofenceRadius = geofenceRadius,
                                 triggerDirection = triggerDirection,
                                 reminderTone = reminderTone,
-                                isDeleted = isDeleted,
                                 deletedAt = deletedAt
                             )
                         )

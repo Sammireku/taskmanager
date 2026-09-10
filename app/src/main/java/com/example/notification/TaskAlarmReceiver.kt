@@ -119,8 +119,12 @@ class TaskAlarmReceiver : BroadcastReceiver() {
             }
         }
 
-        // Start continuous active ringtone & vibration loop
-        AlarmRingtonePlayer.startRingtone(context, soundUri)
+        val prefs = com.example.data.PreferencesManager(context)
+
+        // Start active ringtone & vibration loop only if sound feedback is enabled
+        if (prefs.isSoundFeedbackEnabled) {
+            AlarmRingtonePlayer.startRingtone(context, soundUri)
+        }
 
         // Full Screen Intent pointing to ReminderAlarmActivity
         val fullScreenIntent = Intent(context, ReminderAlarmActivity::class.java).apply {
@@ -201,6 +205,12 @@ class TaskAlarmReceiver : BroadcastReceiver() {
             else -> "Your scheduled task is due now."
         }
 
+        val notifPriority = when {
+            !prefs.isBannerNotificationsEnabled -> NotificationCompat.PRIORITY_DEFAULT
+            isHighPriority -> NotificationCompat.PRIORITY_MAX
+            else -> NotificationCompat.PRIORITY_HIGH
+        }
+
         val notificationBuilder = NotificationCompat.Builder(context, targetChannelId)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(notificationTitle)
@@ -209,33 +219,40 @@ class TaskAlarmReceiver : BroadcastReceiver() {
                 NotificationCompat.BigTextStyle()
                     .bigText(if (description.isNotBlank()) "$contentBody\n[Category: $category | Priority: $priority]" else contentBody)
             )
-            .setPriority(
-                if (isHighPriority) NotificationCompat.PRIORITY_MAX else NotificationCompat.PRIORITY_HIGH
-            )
-            .setSound(soundUri)
-            .setVibrate(longArrayOf(0, 500, 200, 500))
+            .setPriority(notifPriority)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
             .addAction(android.R.drawable.ic_popup_sync, "Snooze 10m", snoozePendingIntent)
             .addAction(android.R.drawable.ic_menu_today, "Reschedule", reschedulePendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Close", dismissPendingIntent)
 
+        if (prefs.isSoundFeedbackEnabled) {
+            notificationBuilder.setSound(soundUri)
+            notificationBuilder.setVibrate(longArrayOf(0, 500, 200, 500))
+        } else {
+            notificationBuilder.setSound(null)
+            notificationBuilder.setVibrate(longArrayOf(0))
+        }
+
+        if (prefs.isFullscreenAlarmEnabled) {
+            notificationBuilder.setFullScreenIntent(fullScreenPendingIntent, true)
+        }
+
         if (isHighPriority) {
             notificationBuilder.setCategory(NotificationCompat.CATEGORY_ALARM)
-            notificationBuilder.setDefaults(NotificationCompat.DEFAULT_LIGHTS or NotificationCompat.DEFAULT_VIBRATE)
         } else {
             notificationBuilder.setCategory(NotificationCompat.CATEGORY_REMINDER)
-            notificationBuilder.setDefaults(NotificationCompat.DEFAULT_LIGHTS or NotificationCompat.DEFAULT_VIBRATE)
         }
 
         notificationManager.notify(taskId, notificationBuilder.build())
 
-        // Launch full screen activity directly
-        try {
-            context.startActivity(fullScreenIntent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Could not start full-screen activity directly: ${e.message}")
+        // Launch full screen activity directly if enabled
+        if (prefs.isFullscreenAlarmEnabled) {
+            try {
+                context.startActivity(fullScreenIntent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not start full-screen activity directly: ${e.message}")
+            }
         }
     }
 }

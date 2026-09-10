@@ -11,8 +11,15 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.CobbyaiApp
+import com.example.data.AppDatabase
+import com.example.data.Task
+import com.example.data.GeofenceEventLog
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingEvent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class GeofenceBroadcastReceiver : BroadcastReceiver() {
 
@@ -23,35 +30,94 @@ class GeofenceBroadcastReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        val geofencingEvent = GeofencingEvent.fromIntent(intent) ?: return
+        val geofencingEvent = GeofencingEvent.fromIntent(intent)
+        if (geofencingEvent == null) {
+            Log.w(TAG, "GeofenceBroadcastReceiver received null GeofencingEvent from intent: $intent")
+            return
+        }
 
         if (geofencingEvent.hasError()) {
-            Log.e(TAG, "Geofencing error code: ${geofencingEvent.errorCode}")
+            Log.e(TAG, "Geofencing event error code: ${geofencingEvent.errorCode}")
             return
         }
 
         val geofenceTransition = geofencingEvent.geofenceTransition
         val triggeringGeofences = geofencingEvent.triggeringGeofences ?: emptyList()
+        val transitionName = when (geofenceTransition) {
+            Geofence.GEOFENCE_TRANSITION_ENTER -> "ENTER"
+            Geofence.GEOFENCE_TRANSITION_EXIT -> "EXIT"
+            Geofence.GEOFENCE_TRANSITION_DWELL -> "DWELL"
+            else -> "UNKNOWN ($geofenceTransition)"
+        }
+        Log.i(TAG, "Geofence event triggered! Transition: $transitionName, geofences count: ${triggeringGeofences.size}")
+        triggeringGeofences.forEach { gf ->
+            Log.i(TAG, "Triggered geofence requestId: ${gf.requestId}")
+        }
         val firstGeofence = triggeringGeofences.firstOrNull()
         val taskId = firstGeofence?.requestId ?: intent.getIntExtra(GeofenceManager.EXTRA_TASK_ID, 0).toString()
 
         val taskTitle = intent.getStringExtra(GeofenceManager.EXTRA_TASK_TITLE) ?: "Task Reminder"
         val locationName = intent.getStringExtra(GeofenceManager.EXTRA_LOCATION_NAME) ?: "Nearby Location"
 
-        val isExit = geofenceTransition == Geofence.GEOFENCE_TRANSITION_EXIT
-        val notificationTitle = if (isExit) {
-            "🛫 Leaving $locationName"
-        } else {
-            "📍 Arrived at $locationName"
-        }
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = AppDatabase.getInstance(context)
+                val taskIdInt = taskId.toIntOrNull() ?: intent.getIntExtra(GeofenceManager.EXTRA_TASK_ID, 0)
+                val task = db.taskDao().getTaskById(taskIdInt)
+                if (task != null && task.isDone) {
+                    Log.d(TAG, "Task $taskId is already completed, skipping proximity alert.")
+                    return@launch
+                }
+                val resolvedTitle = task?.safeTitle ?: taskTitle
+                val resolvedLocation = task?.locationName ?: locationName
 
-        val notificationBody = if (isExit) {
-            "Don't forget: $taskTitle"
-        } else {
-            "You are right here! Time to complete: $taskTitle"
-        }
+                val triggeringLoc = geofencingEvent.triggeringLocation
+                val accuracy = triggeringLoc?.accuracy ?: 0f
+                val lat = triggeringLoc?.latitude ?: task?.latitude ?: 0.0
+                val lng = triggeringLoc?.longitude ?: task?.longitude ?: 0.0
 
-        sendNotification(context, taskId.hashCode(), notificationTitle, notificationBody)
+                val isDwell = geofenceTransition == Geofence.GEOFENCE_TRANSITION_DWELL
+                val isExit = geofenceTransition == Geofence.GEOFENCE_TRANSITION_EXIT
+
+                // Record into GeofenceEventLog for diagnostics
+                db.geofenceEventLogDao().insertLog(
+                    com.example.data.GeofenceEventLog(
+                        timestamp = System.currentTimeMillis(),
+                        geofenceId = taskId,
+                        taskTitle = resolvedTitle,
+                        transitionType = transitionName,
+                        dwellDurationMs = if (isDwell) 30000L else null,
+                        accuracyMeters = accuracy,
+                        latitude = lat,
+                        longitude = lng,
+                        notes = "Geofence triggered at $resolvedLocation (accuracy: ±${accuracy.toInt()}m)"
+                    )
+                )
+
+                val notificationTitle = when {
+                    isDwell -> "⏱️ Dwelling at $resolvedLocation"
+                    isExit -> "🛫 Leaving $resolvedLocation"
+                    else -> "📍 Arrived at $resolvedLocation"
+                }
+
+                val notificationBody = when {
+                    isDwell -> "You've been at $resolvedLocation: Don't forget: $resolvedTitle"
+                    isExit -> "Don't forget before you leave: $resolvedTitle"
+                    else -> "You are right here! Time to complete: $resolvedTitle"
+                }
+
+                sendNotification(context, taskId.hashCode(), notificationTitle, notificationBody)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error checking task database for geofence event", e)
+                val isExit = geofenceTransition == Geofence.GEOFENCE_TRANSITION_EXIT
+                val notificationTitle = if (isExit) "🛫 Leaving $locationName" else "📍 Arrived at $locationName"
+                val notificationBody = if (isExit) "Don't forget: $taskTitle" else "You are right here! Time to complete: $taskTitle"
+                sendNotification(context, taskId.hashCode(), notificationTitle, notificationBody)
+            } finally {
+                pendingResult.finish()
+            }
+        }
     }
 
     private fun sendNotification(context: Context, notifId: Int, title: String, content: String) {

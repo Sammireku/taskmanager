@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".CobbyaiApp"
@@ -47,7 +48,13 @@
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/task_widget_info" />
         </receiver>
-        <receiver android:name=".location.GeofenceBroadcastReceiver" android:exported="false" />
+        <receiver
+            android:name=".location.GeofenceBroadcastReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.cobbyai.ACTION_GEOFENCE_TRIGGER" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".notification.TaskAlarmReceiver" android:exported="false" />
         <receiver android:name=".notification.TaskActionReceiver" android:exported="false" />
 

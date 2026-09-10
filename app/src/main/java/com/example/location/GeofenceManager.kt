@@ -40,12 +40,13 @@ class GeofenceManager(private val context: Context) {
     fun registerTaskGeofence(task: Task) {
         val lat = task.latitude ?: return
         val lng = task.longitude ?: return
-        val radius = task.geofenceRadius.coerceIn(30f, 5000f)
+        val radius = task.geofenceRadius.coerceIn(100f, 5000f)
 
-        val transitionTypes = if (task.safeTriggerDirection.equals("DEPARTURE", ignoreCase = true)) {
+        val isDeparture = task.safeTriggerDirection.equals("DEPARTURE", ignoreCase = true)
+        val transitionTypes = if (isDeparture) {
             Geofence.GEOFENCE_TRANSITION_EXIT
         } else {
-            Geofence.GEOFENCE_TRANSITION_ENTER
+            Geofence.GEOFENCE_TRANSITION_ENTER or Geofence.GEOFENCE_TRANSITION_DWELL
         }
 
         val geofence = Geofence.Builder()
@@ -53,14 +54,15 @@ class GeofenceManager(private val context: Context) {
             .setCircularRegion(lat, lng, radius)
             .setExpirationDuration(Geofence.NEVER_EXPIRE)
             .setTransitionTypes(transitionTypes)
+            .setLoiteringDelay(30000) // 30 seconds dwell time verification
             .build()
 
         val request = GeofencingRequest.Builder()
             .setInitialTrigger(
-                if (transitionTypes == Geofence.GEOFENCE_TRANSITION_ENTER) {
-                    GeofencingRequest.INITIAL_TRIGGER_ENTER
+                if (isDeparture) {
+                    0 // Do not trigger immediately on task creation if currently outside
                 } else {
-                    GeofencingRequest.INITIAL_TRIGGER_EXIT
+                    GeofencingRequest.INITIAL_TRIGGER_ENTER
                 }
             )
             .addGeofence(geofence)

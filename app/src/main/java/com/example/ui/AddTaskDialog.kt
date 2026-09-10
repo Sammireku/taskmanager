@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -25,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.CalendarToday
@@ -67,6 +69,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.data.Task
 import com.example.gemini.GeminiTaskHelper
@@ -88,7 +91,7 @@ fun AddTaskDialog(
     var description by remember { mutableStateOf("") }
     var priority by remember { mutableStateOf("Medium") } // "High", "Medium", "Low"
     var reminderTone by remember { mutableStateOf("DEFAULT") } // "DEFAULT", "URGENT_ALARM", "GENTLE_NOTIF", "PHONE_RINGTONE"
-    var completionStatus by remember { mutableStateOf("PENDING") } // "PENDING", "IN_PROGRESS", "COMPLETED"
+    var status by remember { mutableStateOf("PENDING") } // "PENDING", "IN_PROGRESS", "COMPLETED"
     var dueDate by remember { mutableStateOf<Long?>(null) }
     var scheduleWorkManagerNotification by remember { mutableStateOf(true) }
     var titleError by remember { mutableStateOf(false) }
@@ -97,6 +100,7 @@ fun AddTaskDialog(
     val coroutineScope = rememberCoroutineScope()
 
     // Location state for Google Maps suggestions and Wi-Fi / GPS location
+    val savedLocations = viewModel?.savedLocations?.collectAsState()?.value ?: emptyList()
     val placeSuggestions = viewModel?.placeSuggestions?.collectAsState()?.value ?: emptyList()
     val isSearchingPlaces = viewModel?.isSearchingPlaces?.collectAsState()?.value ?: false
     var locationSearchQuery by remember { mutableStateOf("") }
@@ -104,7 +108,9 @@ fun AddTaskDialog(
     var selectedLatitude by remember { mutableStateOf<Double?>(null) }
     var selectedLongitude by remember { mutableStateOf<Double?>(null) }
     var geofenceRadius by remember { mutableStateOf(150f) }
+    var triggerDirection by remember { mutableStateOf("ARRIVAL") }
     var isFetchingCurrentLocation by remember { mutableStateOf(false) }
+    var detectedCandidates by remember { mutableStateOf<List<String>>(emptyList()) }
 
     var hasLocationPermission by remember {
         mutableStateOf(
@@ -246,7 +252,8 @@ fun AddTaskDialog(
                                         isParsingPrompt = true
                                         coroutineScope.launch {
                                             try {
-                                                val parsed = GeminiTaskHelper.parseTaskFromNaturalLanguage(naturalLanguagePrompt)
+                                                val frequentLocs = savedLocations.map { it.name }
+                                                val parsed = GeminiTaskHelper.parseTaskFromNaturalLanguage(naturalLanguagePrompt, frequentLocations = frequentLocs)
                                                 title = parsed.title
                                                 if (!parsed.description.isNullOrBlank()) {
                                                     description = parsed.description
@@ -255,10 +262,17 @@ fun AddTaskDialog(
                                                 parsed.minutesFromNow?.let { mins ->
                                                     dueDate = System.currentTimeMillis() + (mins * 60 * 1000)
                                                 }
+                                                detectedCandidates = parsed.candidateLocations
                                                 if (!parsed.locationName.isNullOrBlank()) {
                                                     locationSearchQuery = parsed.locationName
                                                     selectedLocationName = parsed.locationName
+                                                    triggerDirection = parsed.triggerDirection
                                                     viewModel?.searchPlacesAutocomplete(parsed.locationName)
+                                                    viewModel?.resolveCoordinatesForLocation(parsed.locationName) { name, lat, lng ->
+                                                        selectedLocationName = name
+                                                        selectedLatitude = lat
+                                                        selectedLongitude = lng
+                                                    }
                                                 }
                                                 titleError = false
                                             } catch (_: Exception) {
@@ -579,6 +593,102 @@ fun AddTaskDialog(
                         shape = RoundedCornerShape(12.dp)
                     )
 
+                    // Multi-location Disambiguation Card if multiple locations were found in the prompt
+                    if (detectedCandidates.size > 1) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("dialog_disambiguation_card"),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.AltRoute,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Multiple places detected — choose geofence target:",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    detectedCandidates.forEach { candidate ->
+                                        val isSelected = selectedLocationName.equals(candidate, ignoreCase = true)
+                                        FilterChip(
+                                            selected = isSelected,
+                                            onClick = {
+                                                selectedLocationName = candidate
+                                                locationSearchQuery = candidate
+                                                viewModel?.searchPlacesAutocomplete(candidate)
+                                                viewModel?.resolveCoordinatesForLocation(candidate) { name, lat, lng ->
+                                                    selectedLocationName = name
+                                                    selectedLatitude = lat
+                                                    selectedLongitude = lng
+                                                }
+                                            },
+                                            label = { Text(candidate, fontSize = 12.sp) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Frequent Places Quick Chips
+                    if (savedLocations.isNotEmpty()) {
+                        Column {
+                            Text(
+                                text = "Frequent Places:",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                savedLocations.forEach { loc ->
+                                    val isSelected = selectedLocationName.equals(loc.name, ignoreCase = true)
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = {
+                                            selectedLocationName = loc.name
+                                            locationSearchQuery = loc.address.ifBlank { loc.name }
+                                            geofenceRadius = loc.radiusMeters
+                                            if (loc.latitude != 0.0 || loc.longitude != 0.0) {
+                                                selectedLatitude = loc.latitude
+                                                selectedLongitude = loc.longitude
+                                            } else {
+                                                coroutineScope.launch {
+                                                    val resolved = viewModel?.resolveLocationCoordinates(loc.address.ifBlank { loc.name }, fallbackToCurrentLocation = true)
+                                                    if (resolved != null) {
+                                                        selectedLatitude = resolved.second
+                                                        selectedLongitude = resolved.third
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        label = { Text("${loc.displayIcon} ${loc.name}", fontSize = 12.sp) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // Autocomplete Suggestions Dropdown
                     if (placeSuggestions.isNotEmpty()) {
                         Card(
@@ -721,8 +831,8 @@ fun AddTaskDialog(
                             Pair("COMPLETED", "Completed")
                         ).forEach { (statusKey, statusLabel) ->
                             FilterChip(
-                                selected = completionStatus == statusKey,
-                                onClick = { completionStatus = statusKey },
+                                selected = status == statusKey,
+                                onClick = { status = statusKey },
                                 label = { Text(statusLabel) },
                                 modifier = Modifier.weight(1f)
                             )
@@ -852,20 +962,18 @@ fun AddTaskDialog(
                         titleError = true
                         return@Button
                     }
-                    val isDone = completionStatus == "COMPLETED"
                     val newTask = Task(
                         title = title.trim(),
                         description = description.trim().ifBlank { null },
                         priority = priority,
                         dueDate = dueDate,
-                        completionStatus = completionStatus,
-                        status = completionStatus,
-                        locationName = selectedLocationName.trim().ifBlank { null },
+                        status = status,
+                        locationName = selectedLocationName.trim().ifBlank { locationSearchQuery.trim() }.ifBlank { null },
                         latitude = selectedLatitude,
                         longitude = selectedLongitude,
                         geofenceRadius = geofenceRadius,
-                        reminderTone = reminderTone,
-                        isCompleted = isDone
+                        triggerDirection = triggerDirection,
+                        reminderTone = reminderTone
                     )
                     onSaveTask(newTask, scheduleWorkManagerNotification)
                 },
