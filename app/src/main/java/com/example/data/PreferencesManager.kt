@@ -17,7 +17,32 @@ class PreferencesManager(context: Context) {
         private const val KEY_INTERNET_LOCATION_CONSENT = "key_internet_location_consent"
         private const val KEY_CLOUD_SYNC_ENABLED = "key_cloud_sync_enabled"
         private const val KEY_USER_NAME = "key_user_name"
+        private const val KEY_TERMS_ACCEPTED = "key_terms_accepted"
+        private const val KEY_ONBOARDING_COMPLETED = "key_onboarding_completed"
+        private const val KEY_VOICE_GENDER = "key_voice_gender" // "MALE", "FEMALE", "DEFAULT"
+        private const val KEY_VOICE_PITCH = "key_voice_pitch" // Float, default 0.95f
+        private const val KEY_VOICE_RATE = "key_voice_rate" // Float, default 0.95f
     }
+
+    var isTermsAccepted: Boolean
+        get() = prefs.getBoolean(KEY_TERMS_ACCEPTED, false)
+        set(value) = prefs.edit().putBoolean(KEY_TERMS_ACCEPTED, value).apply()
+
+    var isOnboardingCompleted: Boolean
+        get() = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
+        set(value) = prefs.edit().putBoolean(KEY_ONBOARDING_COMPLETED, value).apply()
+
+    var voiceGender: String
+        get() = prefs.getString(KEY_VOICE_GENDER, "MALE") ?: "MALE"
+        set(value) = prefs.edit().putString(KEY_VOICE_GENDER, value).apply()
+
+    var voicePitch: Float
+        get() = prefs.getFloat(KEY_VOICE_PITCH, 0.95f)
+        set(value) = prefs.edit().putFloat(KEY_VOICE_PITCH, value).apply()
+
+    var voiceRate: Float
+        get() = prefs.getFloat(KEY_VOICE_RATE, 0.95f)
+        set(value) = prefs.edit().putFloat(KEY_VOICE_RATE, value).apply()
 
     var userName: String
         get() = prefs.getString(KEY_USER_NAME, "") ?: ""

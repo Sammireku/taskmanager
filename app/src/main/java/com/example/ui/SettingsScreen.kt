@@ -50,6 +50,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -78,6 +80,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
+import androidx.compose.material.icons.filled.Gavel
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material3.Slider
+import androidx.compose.ui.text.style.TextAlign
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -93,6 +100,13 @@ fun SettingsScreen(
     val fullscreenAlarm by viewModel.fullscreenAlarmEnabled.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val dynamicColor by viewModel.dynamicColorEnabled.collectAsState()
+
+    val voiceGender by viewModel.voiceGender.collectAsState()
+    val voicePitch by viewModel.voicePitch.collectAsState()
+    val voiceRate by viewModel.voiceRate.collectAsState()
+
+    var showTourDialog by remember { mutableStateOf(false) }
+    var showTermsDialog by remember { mutableStateOf(false) }
 
     val isInternetLocationEnabled by viewModel.isInternetLocationEnabled.collectAsState()
     val isCloudSyncEnabled by viewModel.isCloudSyncEnabled.collectAsState()
@@ -248,9 +262,11 @@ fun SettingsScreen(
                 }
             }
 
-            // Sound & Voice Feedback Card
+            // Sound & AI Voice Customization Card
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("voice_customization_card"),
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -265,7 +281,7 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Audio & Speech Feedback",
+                            text = "Audio & AI Voice Persona Customization",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -280,12 +296,12 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Sound & TTS Speech",
+                                text = "Enable Voice Output (TTS)",
                                 fontWeight = FontWeight.Medium,
                                 fontSize = 14.sp
                             )
                             Text(
-                                text = "Play alarm audio and enable Cobby character voice spoken prompts",
+                                text = "Play alarm audio and allow Cobby to speak responses aloud",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -294,6 +310,151 @@ fun SettingsScreen(
                             checked = soundFeedback,
                             onCheckedChange = { viewModel.setSoundFeedbackEnabled(it) }
                         )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                    // AI Voice Persona Selection
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "AI Voice Persona",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Button(
+                            onClick = { viewModel.testVoicePersona() },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("test_voice_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Test Voice 🔊", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val voiceOptions = listOf(
+                            Triple("MALE", "Male Voice 🧑", "Warm & Deeper"),
+                            Triple("FEMALE", "Female Voice 👩", "Clear & Bright"),
+                            Triple("DEFAULT", "System Default ⚙️", "Standard")
+                        )
+                        voiceOptions.forEach { (key, label, sub) ->
+                            val isSelected = voiceGender == key
+                            Surface(
+                                onClick = { viewModel.setVoiceSettings(key, voicePitch, voiceRate) },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(
+                                    1.5.dp,
+                                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        fontSize = 11.sp
+                                    )
+                                    Text(
+                                        text = sub,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 9.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "Voice Pitch: ${(voicePitch * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Slider(
+                        value = voicePitch,
+                        onValueChange = { viewModel.setVoiceSettings(voiceGender, it, voiceRate) },
+                        valueRange = 0.75f..1.25f,
+                        steps = 10
+                    )
+
+                    Text(
+                        text = "Speech Speed: ${(voiceRate * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Slider(
+                        value = voiceRate,
+                        onValueChange = { viewModel.setVoiceSettings(voiceGender, voicePitch, it) },
+                        valueRange = 0.75f..1.25f,
+                        steps = 10
+                    )
+                }
+            }
+
+            // App Tour, Syntax Examples & Terms Card
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("tour_and_terms_card"),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "App Guide, Syntax & Terms",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = { showTourDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Lightbulb, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Interactive App Tour & Wording Examples 💡")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedButton(
+                        onClick = { showTermsDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Gavel, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Terms of Service & User Privacy Agreement 📜")
                     }
                 }
             }
@@ -962,6 +1123,14 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+
+    if (showTourDialog) {
+        AppTourDialog(onDismiss = { showTourDialog = false })
+    }
+
+    if (showTermsDialog) {
+        TermsOfServiceDialog(onDismiss = { showTermsDialog = false })
     }
 }
 

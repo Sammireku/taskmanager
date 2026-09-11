@@ -109,6 +109,13 @@ class TaskViewModel(
     var isTtsEnabled = MutableStateFlow(prefsManager.isSoundFeedbackEnabled)
         private set
 
+    val voiceGender = MutableStateFlow(prefsManager.voiceGender)
+    val voicePitch = MutableStateFlow(prefsManager.voicePitch)
+    val voiceRate = MutableStateFlow(prefsManager.voiceRate)
+
+    val isTermsAccepted = MutableStateFlow(prefsManager.isTermsAccepted)
+    val isOnboardingCompleted = MutableStateFlow(prefsManager.isOnboardingCompleted)
+
     private var firestoreListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     init {
@@ -122,6 +129,7 @@ class TaskViewModel(
             tts = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     tts?.language = Locale.US
+                    updateTtsEngineVoice()
                 }
             }
         } catch (e: Exception) {
@@ -156,10 +164,84 @@ class TaskViewModel(
         isTtsEnabled.value = !isTtsEnabled.value
     }
 
+    fun setVoiceSettings(gender: String, pitch: Float, rate: Float) {
+        prefsManager.voiceGender = gender
+        prefsManager.voicePitch = pitch
+        prefsManager.voiceRate = rate
+        voiceGender.value = gender
+        voicePitch.value = pitch
+        voiceRate.value = rate
+        updateTtsEngineVoice()
+    }
+
+    fun updateTtsEngineVoice() {
+        val engine = tts ?: return
+        try {
+            engine.setPitch(voicePitch.value)
+            engine.setSpeechRate(voiceRate.value)
+
+            val desiredGender = voiceGender.value
+            if (desiredGender != "DEFAULT" && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                val available = engine.voices
+                if (!available.isNullOrEmpty()) {
+                    val matched = available.firstOrNull { v ->
+                        val isEnglish = v.locale.language == "en"
+                        val vName = v.name.lowercase(Locale.ROOT)
+                        val features = v.features ?: emptySet()
+                        if (desiredGender == "MALE") {
+                            isEnglish && (
+                                features.contains("gender=male") ||
+                                vName.contains("male") ||
+                                vName.contains("iom") ||
+                                vName.contains("sfg") ||
+                                vName.contains("m-local") ||
+                                vName.contains("en-us-x-sfg") ||
+                                vName.contains("en-us-x-iom")
+                            )
+                        } else {
+                            isEnglish && (
+                                features.contains("gender=female") ||
+                                vName.contains("female") ||
+                                (!vName.contains("iom-local") && vName.contains("f-local")) ||
+                                vName.contains("en-us-x-iol") ||
+                                vName.contains("en-us-x-tpf")
+                            )
+                        }
+                    } ?: available.firstOrNull { v ->
+                        val vName = v.name.lowercase(Locale.ROOT)
+                        if (desiredGender == "MALE") vName.contains("male") || vName.contains("m-local")
+                        else vName.contains("female") || vName.contains("f-local")
+                    }
+                    if (matched != null) {
+                        engine.voice = matched
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("TaskViewModel", "Failed to update TTS voice settings", e)
+        }
+    }
+
+    fun testVoicePersona() {
+        val name = userName.value.ifBlank { "there" }
+        speakText("Hello $name! I'm Cobby. How do I sound now? Ready to conquer our tasks together!", force = true)
+    }
+
+    fun acceptTerms() {
+        prefsManager.isTermsAccepted = true
+        isTermsAccepted.value = true
+    }
+
+    fun completeOnboarding() {
+        prefsManager.isOnboardingCompleted = true
+        isOnboardingCompleted.value = true
+    }
+
     fun speakText(text: String, force: Boolean = false) {
         if ((isTtsEnabled.value || soundFeedbackEnabled.value || force) && text.isNotBlank()) {
             val clean = text.replace(Regex("[^\u0000-\u007F]"), "").trim()
             if (clean.isNotBlank()) {
+                updateTtsEngineVoice()
                 tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "CobbySpeech")
             }
         }

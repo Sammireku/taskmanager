@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BrightnessAuto
@@ -171,6 +172,9 @@ fun HomeScreen(
     val currentDate = remember { LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMMM d")) }
     val userName by viewModel.userName.collectAsState()
     var showNameDialog by remember { mutableStateOf(false) }
+    var showTourDialog by remember { mutableStateOf(false) }
+    var isSearchExpanded by remember { mutableStateOf(false) }
+    var isBriefingExpanded by remember { mutableStateOf(false) }
     val cobbyMood by viewModel.cobbyMood.collectAsState()
     val cobbySpeech by viewModel.cobbySpeech.collectAsState()
     var showAddTaskDialog by remember { mutableStateOf(false) }
@@ -322,8 +326,30 @@ fun HomeScreen(
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        IconButton(
+                            onClick = { isSearchExpanded = !isSearchExpanded },
+                            modifier = Modifier.testTag("search_toggle_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "Toggle Search",
+                                tint = if (isSearchExpanded || searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { showTourDialog = true },
+                            modifier = Modifier.testTag("app_tour_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Help,
+                                contentDescription = "App Tour & Syntax Guide",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
                         IconButton(
                             onClick = onNavigateToDiagnostics,
                             modifier = Modifier.testTag("geofence_radar_button")
@@ -652,128 +678,150 @@ fun HomeScreen(
             }
 
             item {
-                // Interactive Cobby AI Companion Card with Personal Voice & Name Interaction
+                // Unified Cobby AI Companion & Quick Task Card
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .clickable { viewModel.onCobbyCharacterClicked() }
                         .testTag("cobby_companion_bar"),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(20.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
                     ),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
                 ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(38.dp)
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        // Top Header Row
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { isBriefingExpanded = !isBriefingExpanded },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "🤖",
-                                    fontSize = 20.sp
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                modifier = Modifier.weight(1f)
                             ) {
-                                Text(
-                                    text = "Cobby AI Companion",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                if (userName.isNotBlank()) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text("🤖", fontSize = 18.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "Cobby AI Assistant",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        if (userName.isNotBlank()) {
+                                            Text(
+                                                text = " • $userName",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
                                     Text(
-                                        text = "• for $userName",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = cobbySpeech,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
-                            Text(
-                                text = cobbySpeech,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        IconButton(
-                            onClick = { showNameDialog = true },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("cobby_personalize_name_button")
-                        ) {
-                            Icon(
-                                imageVector = if (userName.isNotBlank()) Icons.Default.Face else Icons.Default.AccountCircle,
-                                contentDescription = "Personalize Name",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                }
-            }
 
-            item {
-                // Dedicated Native Language Parsing Textbox Card
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .testTag("home_natural_language_card"),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.AutoAwesome,
-                                    contentDescription = "Natural Language Parser",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Natural Language Task Input",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    modifier = Modifier.padding(end = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "${(animatedProgress * 100).toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { showNameDialog = true },
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("cobby_personalize_name_button")
+                                ) {
+                                    Icon(
+                                        imageVector = if (userName.isNotBlank()) Icons.Default.Face else Icons.Default.AccountCircle,
+                                        contentDescription = "Personalize Name",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
+                        }
 
-                            TextButton(
-                                onClick = { showAddTaskDialog = true },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                                modifier = Modifier.height(28.dp).testTag("open_form_dialog_button")
-                            ) {
+                        // Collapsible Briefing & Progress Track
+                        AnimatedVisibility(visible = isBriefingExpanded) {
+                            Column(modifier = Modifier.padding(top = 10.dp)) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                                Spacer(modifier = Modifier.height(10.dp))
                                 Text(
-                                    text = "Full Form →",
-                                    style = MaterialTheme.typography.labelSmall
+                                    text = dailyBriefing,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "$completedTasksCount of $totalTasksCount tasks done",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    IconButton(
+                                        onClick = { viewModel.refreshBriefing() },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        if (isBriefingLoading) {
+                                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                        } else {
+                                            Icon(
+                                                Icons.Default.Refresh,
+                                                contentDescription = "Refresh Briefing",
+                                                modifier = Modifier.size(14.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                LinearProgressIndicator(
+                                    progress = { animatedProgress },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp)),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
+                        // Quick AI Natural Language Task Bar
                         OutlinedTextField(
                             value = inlineNaturalLanguageText,
                             onValueChange = { inlineNaturalLanguageText = it },
@@ -782,13 +830,19 @@ fun HomeScreen(
                                 .testTag("ai_task_input_field"),
                             placeholder = {
                                 Text(
-                                    "e.g. \"Doctor appointment tomorrow 3pm #Health\"",
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    "✨ Type or speak a task...",
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                 )
                             },
                             singleLine = true,
                             shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            ),
                             trailingIcon = {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -797,7 +851,7 @@ fun HomeScreen(
                                     if (inlineNaturalLanguageText.isNotBlank()) {
                                         if (isAiParsing) {
                                             CircularProgressIndicator(
-                                                modifier = Modifier.size(20.dp),
+                                                modifier = Modifier.size(18.dp),
                                                 strokeWidth = 2.dp,
                                                 color = MaterialTheme.colorScheme.primary
                                             )
@@ -817,20 +871,21 @@ fun HomeScreen(
                                                 Icon(
                                                     Icons.Default.Send,
                                                     contentDescription = "Parse and Add Task",
-                                                    tint = MaterialTheme.colorScheme.primary
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(18.dp)
                                                 )
                                             }
                                         }
                                     } else {
                                         IconButton(
                                             onClick = { startGoogleVoiceRecorder("INLINE") },
-                                            modifier = Modifier.size(36.dp)
+                                            modifier = Modifier.size(32.dp)
                                         ) {
                                             Icon(
                                                 Icons.Default.Mic,
                                                 contentDescription = "Google Voice Input",
                                                 tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(20.dp)
+                                                modifier = Modifier.size(18.dp)
                                             )
                                         }
                                     }
@@ -841,143 +896,56 @@ fun HomeScreen(
                 }
             }
 
-            item {
-                // AI Daily Briefing & Progress Card
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.AutoAwesome,
-                                    contentDescription = "AI Briefing",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
+            // Only show Proximity Radar when nearby tasks actually exist or location permissions are needed
+            if (nearbyTasks.isNotEmpty() || errandClusters.isNotEmpty()) {
+                item {
+                    ProximityRadarCard(
+                        nearbyTasks = nearbyTasks,
+                        errandClusters = errandClusters,
+                        hasLocationPermission = hasLocationPermission,
+                        hasAnyLocationTasks = allTasks.any { it.latitude != null && !it.isDone },
+                        onRequestLocationPermission = {
+                            locationPermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (userName.isNotBlank()) "Smart Briefing for $userName" else "Smart Briefing",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-
-                            IconButton(
-                                onClick = { viewModel.refreshBriefing() },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                if (isBriefingLoading) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                } else {
-                                    Icon(
-                                        Icons.Default.Refresh,
-                                        contentDescription = "Refresh Briefing",
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.onSecondaryContainer
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Text(
-                            text = dailyBriefing,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Progress track
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "$completedTasksCount of $totalTasksCount tasks done",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
                             )
-                            Text(
-                                text = "${(animatedProgress * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        LinearProgressIndicator(
-                            progress = { animatedProgress },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(RoundedCornerShape(3.dp)),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    }
+                        },
+                        onTaskClick = onTaskClick,
+                        onCompleteTask = { task -> viewModel.toggleTaskCompletion(task) }
+                    )
                 }
             }
 
-            item {
-                // Proximity Aware Radar Banner & Errand Clustering
-                ProximityRadarCard(
-                    nearbyTasks = nearbyTasks,
-                    errandClusters = errandClusters,
-                    hasLocationPermission = hasLocationPermission,
-                    hasAnyLocationTasks = allTasks.any { it.latitude != null && !it.isDone },
-                    onRequestLocationPermission = {
-                        locationPermissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                Manifest.permission.ACCESS_COARSE_LOCATION
-                            )
-                        )
-                    },
-                    onTaskClick = onTaskClick,
-                    onCompleteTask = { task -> viewModel.toggleTaskCompletion(task) }
-                )
-            }
-
-            item {
-                // Search Bar
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { viewModel.setQuery(it) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .testTag("task_search_field"),
-                    placeholder = { Text("Search tasks or categories...") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.setQuery("") }) {
+            // Expandable Search Bar
+            if (isSearchExpanded || searchQuery.isNotEmpty()) {
+                item {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { viewModel.setQuery(it) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .testTag("task_search_field"),
+                        placeholder = { Text("Search tasks or categories...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                viewModel.setQuery("")
+                                isSearchExpanded = false
+                            }) {
                                 Icon(Icons.Default.Clear, contentDescription = "Clear Search")
                             }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                        )
                     )
-                )
+                }
             }
 
             item {
@@ -1340,6 +1308,10 @@ fun HomeScreen(
                     }
                 }
             )
+        }
+
+        if (showTourDialog) {
+            AppTourDialog(onDismiss = { showTourDialog = false })
         }
 
         // Personalize Name Dialog

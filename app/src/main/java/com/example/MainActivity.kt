@@ -48,6 +48,8 @@ class MainActivity : ComponentActivity() {
     setContent {
       val themeMode by vm.themeMode.collectAsState()
       val dynamicColor by vm.dynamicColorEnabled.collectAsState()
+      val isOnboardingCompleted by vm.isOnboardingCompleted.collectAsState()
+      val startDestination = if (!isOnboardingCompleted) "onboarding" else "home"
 
       CobbyaiTheme(themeMode = themeMode, dynamicColor = dynamicColor) {
         val navController = rememberNavController()
@@ -70,7 +72,17 @@ class MainActivity : ComponentActivity() {
         }
 
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-          NavHost(navController = navController, startDestination = "home") {
+          NavHost(navController = navController, startDestination = startDestination) {
+            composable("onboarding") {
+              com.example.ui.OnboardingPermissionsScreen(
+                viewModel = vm,
+                onOnboardingComplete = {
+                  navController.navigate("home") {
+                    popUpTo("onboarding") { inclusive = true }
+                  }
+                }
+              )
+            }
             composable("home") {
               HomeScreen(
                 viewModel = vm,
