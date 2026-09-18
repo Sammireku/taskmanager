@@ -1117,7 +1117,7 @@ class TaskViewModel(
             locationName = finalLocationName,
             latitude = lat,
             longitude = lng,
-            geofenceRadius = 150f,
+            geofenceRadius = 250f,
             triggerDirection = if (finalTrigger.equals("departure", true)) "DEPARTURE" else "ARRIVAL"
         )
 
@@ -1180,7 +1180,7 @@ class TaskViewModel(
             locationName = finalLoc,
             latitude = lat,
             longitude = lng,
-            geofenceRadius = 150f,
+            geofenceRadius = 250f,
             triggerDirection = triggerDir
         )
 
@@ -1319,37 +1319,77 @@ class TaskViewModel(
 
     /**
      * Search Places using Google Places SDK Autocomplete with intelligent Geocoder fallback
+     * and instant Next Location Suggestions (Current Location, Saved Frequent Places, Recent Task Locations).
      */
     fun searchPlacesAutocomplete(query: String) {
         placeSearchJob?.cancel()
         val trimmed = query.trim()
-        if (trimmed.isBlank()) {
-            placeSuggestions.value = emptyList()
-            isSearchingPlaces.value = false
-            return
-        }
         val bias = getLocationBiasCenter()
         placeSearchJob = viewModelScope.launch {
-            delay(300L) // Debounce rapid keystrokes to minimize network usage and stay cost-effective
+            if (trimmed.isNotBlank()) {
+                delay(200L) // Fast, smooth debouncing
+            }
             isSearchingPlaces.value = true
             try {
-                // 1. Instant local match from saved frequent places (0ms, 0 network, completely free)
+                // 1. Current Location suggestion when query is blank or matches "current" / "location" / "my"
+                val currentLocSuggestions = mutableListOf<PlaceSuggestion>()
+                val userLoc = userLocation.value
+                if (trimmed.isBlank() || "current location".contains(trimmed, ignoreCase = true) || "my location".contains(trimmed, ignoreCase = true) || "near me".contains(trimmed, ignoreCase = true)) {
+                    val latLngStr = if (userLoc != null) {
+                        "Lat: ${String.format(Locale.US, "%.4f", userLoc.latitude)}, Lng: ${String.format(Locale.US, "%.4f", userLoc.longitude)}"
+                    } else "Use current GPS / Wi-Fi position"
+                    currentLocSuggestions.add(
+                        PlaceSuggestion(
+                            placeId = "current_location",
+                            primaryText = "📍 Current Location",
+                            secondaryText = latLngStr,
+                            fullText = "Current Location"
+                        )
+                    )
+                }
+
+                // 2. Saved Frequent Locations (Home, Work, Gym, Market, etc.)
                 val savedList = db.savedLocationDao().getAllSavedLocationsList()
-                val localMatches = savedList.filter {
-                    it.name.contains(trimmed, ignoreCase = true) ||
-                    it.address.contains(trimmed, ignoreCase = true)
+                val localMatches = savedList.filter { loc ->
+                    trimmed.isBlank() ||
+                    loc.name.contains(trimmed, ignoreCase = true) ||
+                    loc.address.contains(trimmed, ignoreCase = true) ||
+                    loc.category.contains(trimmed, ignoreCase = true)
                 }.map { loc ->
                     PlaceSuggestion(
                         placeId = "saved_${loc.id}_${loc.latitude}_${loc.longitude}",
                         primaryText = "${loc.displayIcon} ${loc.name}",
-                        secondaryText = loc.address.ifBlank { "Frequent Location (${String.format(Locale.US, "%.4f, %.4f", loc.latitude, loc.longitude)})" },
+                        secondaryText = loc.address.ifBlank { "Saved Location (${loc.category})" },
                         fullText = loc.address.ifBlank { loc.name }
                     )
                 }
 
-                // 2. Fetch external suggestions (Places API or OSM / Geocoder fallback)
+                // 3. Recent Task Locations from existing tasks in Room DB
+                val recentTaskLocations = try {
+                    val tasks = db.taskDao().getAllTasksList()
+                    tasks.filter { task -> !task.locationName.isNullOrBlank() && (task.latitude != null || task.longitude != null) }
+                        .filter { task ->
+                            trimmed.isBlank() || task.locationName.orEmpty().contains(trimmed, ignoreCase = true)
+                        }
+                        .distinctBy { task -> task.locationName?.trim()?.lowercase() }
+                        .take(5)
+                        .map { task ->
+                            val lat = task.latitude ?: 0.0
+                            val lng = task.longitude ?: 0.0
+                            PlaceSuggestion(
+                                placeId = "recent_task_${lat}_${lng}_${task.id}",
+                                primaryText = "📌 ${task.locationName}",
+                                secondaryText = "Recent task location",
+                                fullText = task.locationName.orEmpty()
+                            )
+                        }
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
+                // 4. External Places API or Geocoder search (if internet enabled and query has 1+ chars)
                 val allowInternet = prefsManager.isInternetLocationEnabled
-                val externalSuggestions = if (allowInternet) {
+                val externalSuggestions = if (allowInternet && trimmed.isNotBlank()) {
                     val placesPreds = placesService.getAutocompletePredictions(trimmed, biasCenter = bias)
                     if (placesPreds.isNotEmpty()) {
                         placesPreds
@@ -1359,7 +1399,7 @@ class TaskViewModel(
                             PlaceSuggestion(
                                 placeId = "geo_${item.second.first}_${item.second.second}",
                                 primaryText = item.first,
-                                secondaryText = "Lat: ${String.format(java.util.Locale.US, "%.4f", item.second.first)}, Lng: ${String.format(java.util.Locale.US, "%.4f", item.second.second)}",
+                                secondaryText = "Lat: ${String.format(Locale.US, "%.4f", item.second.first)}, Lng: ${String.format(Locale.US, "%.4f", item.second.second)}",
                                 fullText = item.first
                             )
                         }
@@ -1368,7 +1408,8 @@ class TaskViewModel(
                     emptyList()
                 }
 
-                val combined = (localMatches + externalSuggestions).distinctBy { it.fullText.ifBlank { it.primaryText } }
+                val combined = (currentLocSuggestions + localMatches + recentTaskLocations + externalSuggestions)
+                    .distinctBy { it.fullText.ifBlank { it.primaryText } }
                 placeSuggestions.value = combined
             } catch (e: Exception) {
                 Log.w(TAG, "Autocomplete search failed: ${e.message}")
@@ -1387,6 +1428,46 @@ class TaskViewModel(
      */
     fun fetchPlaceDetails(placeId: String, onResult: ((PlaceDetails?) -> Unit)? = null) {
         viewModelScope.launch {
+            if (placeId == "current_location") {
+                val loc = userLocation.value ?: locationHelper.getCurrentLocation()
+                if (loc != null) {
+                    val address = locationHelper.getAddressFromCoordinates(loc.latitude, loc.longitude)
+                    val name = if (address.isNotBlank()) address else "Current Location"
+                    val details = PlaceDetails(
+                        placeId = placeId,
+                        name = name,
+                        address = address,
+                        phoneNumber = null,
+                        websiteUri = null,
+                        rating = null,
+                        latLng = com.google.android.gms.maps.model.LatLng(loc.latitude, loc.longitude)
+                    )
+                    selectedPlaceDetails.value = details
+                    onResult?.invoke(details)
+                    return@launch
+                }
+            }
+            if (placeId.startsWith("recent_task_")) {
+                val parts = placeId.removePrefix("recent_task_").split("_")
+                val lat = parts.getOrNull(0)?.toDoubleOrNull()
+                val lng = parts.getOrNull(1)?.toDoubleOrNull()
+                val taskId = parts.getOrNull(2)?.toIntOrNull()
+                val task = if (taskId != null) db.taskDao().getTaskById(taskId) else null
+                val finalLat = lat ?: task?.latitude ?: 0.0
+                val finalLng = lng ?: task?.longitude ?: 0.0
+                val details = PlaceDetails(
+                    placeId = placeId,
+                    name = task?.locationName ?: "Recent Location",
+                    address = task?.locationName ?: "Recent Task Location",
+                    phoneNumber = null,
+                    websiteUri = null,
+                    rating = null,
+                    latLng = com.google.android.gms.maps.model.LatLng(finalLat, finalLng)
+                )
+                selectedPlaceDetails.value = details
+                onResult?.invoke(details)
+                return@launch
+            }
             if (placeId.startsWith("saved_")) {
                 val parts = placeId.removePrefix("saved_").split("_")
                 val id = parts.getOrNull(0)?.toIntOrNull()
@@ -1913,8 +1994,17 @@ class TaskViewModel(
                     userLocation.value = cur
                 }
 
-                // Heal saved frequent places
-                val savedList = db.savedLocationDao().getAllSavedLocationsList()
+                // Heal saved frequent places (seed default presets if empty)
+                var savedList = db.savedLocationDao().getAllSavedLocationsList()
+                if (savedList.isEmpty()) {
+                    val defaultPresets = listOf(
+                        SavedLocation(name = "Home", category = "HOME", address = "Home", latitude = 0.0, longitude = 0.0),
+                        SavedLocation(name = "Work", category = "WORK", address = "Work", latitude = 0.0, longitude = 0.0),
+                        SavedLocation(name = "Gym", category = "GYM", address = "Gym", latitude = 0.0, longitude = 0.0)
+                    )
+                    defaultPresets.forEach { db.savedLocationDao().insertSavedLocation(it) }
+                    savedList = db.savedLocationDao().getAllSavedLocationsList()
+                }
                 for (saved in savedList) {
                     if (saved.latitude == 0.0 && saved.longitude == 0.0) {
                         val resolved = resolveLocationCoordinates(saved.address.ifBlank { saved.name }, fallbackToCurrentLocation = true)

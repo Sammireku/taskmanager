@@ -32,7 +32,13 @@ class HabitReminderWorker(
     }
 
     override suspend fun doWork(): Result {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val wakeLock = powerManager.newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK,
+            "Cobbyai:HabitReminderWorkerWakeLock"
+        )
         return try {
+            wakeLock.acquire(60000L) // Maintain CPU power during habit reminder processing
             val customTitle = inputData.getString(KEY_HABIT_TITLE)
 
             if (!customTitle.isNullOrBlank()) {
@@ -64,6 +70,14 @@ class HabitReminderWorker(
         } catch (e: Exception) {
             Log.e(TAG, "Error executing HabitReminderWorker", e)
             Result.failure()
+        } finally {
+            try {
+                if (wakeLock.isHeld) {
+                    wakeLock.release()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing wakeLock: ${e.message}")
+            }
         }
     }
 

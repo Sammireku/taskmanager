@@ -131,7 +131,7 @@ fun TaskDetailScreen(
 
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    var mapDisplayMode by remember { mutableStateOf("radar") }
+    var mapDisplayMode by remember { mutableStateOf("map") }
     var showMapAuthGuide by remember { mutableStateOf(false) }
 
     // Coordinates (defaults to Singapore coordinates if not set)

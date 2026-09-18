@@ -67,6 +67,7 @@ class TaskAlarmReceiver : BroadcastReceiver() {
                     enableLights(true)
                     setShowBadge(true)
                     setSound(alarmSoundUri, alarmAudioAttributes)
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 }
                 notificationManager.createNotificationChannel(highPriorityChannel)
 
@@ -81,6 +82,7 @@ class TaskAlarmReceiver : BroadcastReceiver() {
                     enableLights(true)
                     setShowBadge(true)
                     setSound(alarmSoundUri, notificationAudioAttributes)
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 }
                 notificationManager.createNotificationChannel(generalChannel)
             }
@@ -88,7 +90,15 @@ class TaskAlarmReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        val taskId = intent.getIntExtra(EXTRA_TASK_ID, 0)
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val wakeLock = powerManager.newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK,
+            "Cobbyai:TaskAlarmReceiverWakeLock"
+        )
+        try {
+            wakeLock.acquire(60000L) // Hold CPU awake during critical alarm sequence
+
+            val taskId = intent.getIntExtra(EXTRA_TASK_ID, 0)
         val title = intent.getStringExtra(EXTRA_TASK_TITLE) ?: "Task Due"
         val description = intent.getStringExtra(EXTRA_TASK_DESCRIPTION).orEmpty()
         val priority = intent.getStringExtra(EXTRA_TASK_PRIORITY) ?: "Medium"
@@ -220,6 +230,7 @@ class TaskAlarmReceiver : BroadcastReceiver() {
                     .bigText(if (description.isNotBlank()) "$contentBody\n[Category: $category | Priority: $priority]" else contentBody)
             )
             .setPriority(notifPriority)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_popup_sync, "Snooze 10m", snoozePendingIntent)
@@ -252,6 +263,17 @@ class TaskAlarmReceiver : BroadcastReceiver() {
                 context.startActivity(fullScreenIntent)
             } catch (e: Exception) {
                 Log.e(TAG, "Could not start full-screen activity directly: ${e.message}")
+            }
+        }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in TaskAlarmReceiver.onReceive: ${e.message}", e)
+        } finally {
+            try {
+                if (wakeLock.isHeld) {
+                    wakeLock.release()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing wakeLock: ${e.message}")
             }
         }
     }

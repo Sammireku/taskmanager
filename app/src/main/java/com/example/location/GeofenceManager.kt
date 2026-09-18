@@ -40,7 +40,7 @@ class GeofenceManager(private val context: Context) {
     fun registerTaskGeofence(task: Task) {
         val lat = task.latitude ?: return
         val lng = task.longitude ?: return
-        val radius = task.geofenceRadius.coerceIn(100f, 5000f)
+        val radius = task.geofenceRadius.coerceIn(200f, 5000f)
 
         val isDeparture = task.safeTriggerDirection.equals("DEPARTURE", ignoreCase = true)
         val transitionTypes = if (isDeparture) {
@@ -55,6 +55,7 @@ class GeofenceManager(private val context: Context) {
             .setExpirationDuration(Geofence.NEVER_EXPIRE)
             .setTransitionTypes(transitionTypes)
             .setLoiteringDelay(30000) // 30 seconds dwell time verification
+            .setNotificationResponsiveness(10000) // 10s responsiveness for 200-250m accuracy with low battery draw
             .build()
 
         val request = GeofencingRequest.Builder()

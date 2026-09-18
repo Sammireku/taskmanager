@@ -13,7 +13,7 @@ data class SavedLocation(
     val address: String = "",
     val latitude: Double,
     val longitude: Double,
-    val radiusMeters: Float = 150f,
+    val radiusMeters: Float = 250f,
     val category: String = "CUSTOM" // "HOME", "WORK", "SCHOOL", "MARKET", "GYM", "CUSTOM"
 ) {
     val displayIcon: String

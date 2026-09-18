@@ -18,6 +18,9 @@ interface TaskDao {
     @Query("SELECT * FROM tasks ORDER BY id ASC")
     suspend fun getAllTasksList(): List<Task>
 
+    @Query("SELECT * FROM tasks WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND status != 'COMPLETED' AND deletedAt IS NULL")
+    suspend fun getGeofencedTasks(): List<Task>
+
     @Query("SELECT * FROM tasks WHERE id = :id")
     suspend fun getTaskById(id: Int): Task?
 

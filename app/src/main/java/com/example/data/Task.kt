@@ -26,7 +26,7 @@ data class Task(
     val locationName: String? = null,
     val latitude: Double? = null,
     val longitude: Double? = null,
-    val geofenceRadius: Float = 150f, // in meters
+    val geofenceRadius: Float = 250f, // in meters (200-250m default sensitivity)
     val triggerDirection: String = "ARRIVAL", // "ARRIVAL" or "DEPARTURE"
     val reminderTone: String? = "DEFAULT", // "DEFAULT", "URGENT_ALARM", "GENTLE_NOTIF", "PHONE_RINGTONE", "CHIME", "BEACON"
     val deletedAt: Long? = null

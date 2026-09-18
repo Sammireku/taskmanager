@@ -55,8 +55,8 @@ class GeofenceCalibrationWorker(
             var calibratedCount = 0
 
             for (task in geofencedTasks) {
-                // Minimum safe radius is at least 1.4x the GPS uncertainty margin, min 150m
-                val safeMinimumRadius = max(150.0f, accuracy * 1.4f).coerceAtMost(600.0f)
+                // Minimum safe radius is at least 1.4x the GPS uncertainty margin, min 200m
+                val safeMinimumRadius = max(200.0f, accuracy * 1.4f).coerceAtMost(600.0f)
                 if (task.geofenceRadius < safeMinimumRadius) {
                     val updatedTask = task.copy(geofenceRadius = safeMinimumRadius)
                     db.taskDao().updateTask(updatedTask)

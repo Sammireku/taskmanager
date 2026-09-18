@@ -353,7 +353,7 @@ Output: {"task": "go to the barbershop", "location": {"query": "the barbershop",
         var locSpecificity = "none"
         var locTrigger = "arrival"
 
-        if (lower.contains("leave") || lower.contains("leaving") || lower.contains("when i leave")) {
+        if (detectTriggerDirection(lower) == "DEPARTURE") {
             locTrigger = "departure"
         } else if (lower.contains("near") || lower.contains("close to") || lower.contains("around")) {
             locTrigger = "proximity"
@@ -530,6 +530,35 @@ Output: {"task": "go to the barbershop", "location": {"query": "the barbershop",
     }
 
     /**
+     * Enhanced NLP directional trigger detector for spatial geofencing intents.
+     * Evaluates expanded natural language vocabulary for departure, exit, arrival, and proximity triggers.
+     */
+    fun detectTriggerDirection(input: String): String {
+        if (input.isBlank()) return "ARRIVAL"
+        val lower = input.lowercase(java.util.Locale.ROOT).trim()
+
+        val departurePhrases = listOf(
+            "when i leave", "when leaving", "as i leave", "after leaving", "upon leaving", "on leaving",
+            "when i depart", "when departing", "as i depart", "after departing", "upon departure", "departing",
+            "on exit", "upon exit", "exiting", "when i exit", "after exit", "on my way out",
+            "out of", "get out of", "getting out of", "walk out of", "walking out of", "heading out",
+            "leaving from", "depart from", "departing from", "away from", "after i leave", "as i head out",
+            "off from", "checkout of", "checking out of", "leave "
+        )
+
+        val departureRegex = Regex(
+            """\b(?:when\s+i\s+leave|when\s+leaving|as\s+i\s+leave|after\s+leaving|upon\s+leaving|leaving|when\s+i\s+depart|when\s+departing|as\s+i\s+depart|after\s+departing|upon\s+departure|departing|depart|on\s+exit|upon\s+exit|exiting|exit|when\s+i\s+exit|out\s+of|get\s+out\s+of|getting\s+out\s+of|heading\s+out(?:\s+from)?|way\s+out|leaving\s+from|from|away\s+from|after\s+i\s+leave|as\s+i\s+head\s+out)\b""",
+            RegexOption.IGNORE_CASE
+        )
+
+        if (departurePhrases.any { lower.contains(it) } || departureRegex.containsMatchIn(lower)) {
+            return "DEPARTURE"
+        }
+
+        return "ARRIVAL"
+    }
+
+    /**
      * Deterministic local rule engine for parsing natural language prompts and speech inputs offline or as a fallback.
      */
     fun extractFallbackTaskData(
@@ -548,12 +577,7 @@ Output: {"task": "go to the barbershop", "location": {"query": "the barbershop",
             else -> "Medium"
         }
 
-        val triggerDirection = when {
-            lower.contains("leave") || lower.contains("leaving") || lower.contains("depart") ||
-            lower.contains("departing") || lower.contains("when i leave") || lower.contains("after leaving") ||
-            lower.contains("from ") || lower.contains("exit") -> "DEPARTURE"
-            else -> "ARRIVAL"
-        }
+        val triggerDirection = detectTriggerDirection(lower)
 
         val category = when {
             lower.contains("meeting") || lower.contains("presentation") || lower.contains("report") ||

@@ -9,6 +9,8 @@ import android.os.Build
 import android.util.Log
 import com.example.data.Task
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.Granularity
+import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -54,6 +56,21 @@ class LocationHelper(private val context: Context) {
             } else {
                 String.format(Locale.getDefault(), "%.1f km", meters / 1000f)
             }
+        }
+
+        /**
+         * Creates an optimized LocationRequest with BALANCED_POWER_ACCURACY, 30s interval,
+         * 15s min update interval, and 50m displacement threshold. This maintains high
+         * geofencing responsiveness within 200-250m target boundaries while conserving battery.
+         */
+        fun createOptimizedLocationRequest(): LocationRequest {
+            return LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30000L)
+                .setMinUpdateIntervalMillis(15000L)
+                .setMaxUpdateDelayMillis(60000L)
+                .setMinUpdateDistanceMeters(50f)
+                .setGranularity(Granularity.GRANULARITY_PERMISSION_LEVEL)
+                .setWaitForAccurateLocation(false)
+                .build()
         }
     }
 

@@ -1,7 +1,10 @@
 package com.example.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -17,17 +20,23 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowUp
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.data.Task
+import com.example.gemini.GeminiTaskHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -69,15 +79,86 @@ fun TaskFormScreen(
     var category by remember(existingTask) { mutableStateOf(existingTask?.category ?: "General") }
     var reminderTone by remember(existingTask) { mutableStateOf(existingTask?.safeReminderTone ?: "DEFAULT") }
     var customCategoryInput by remember { mutableStateOf("") }
+    // Voice Speech-to-Text integration
+    var pendingVoiceField by remember { mutableStateOf<String?>(null) } // "TITLE", "DESC"
+
+    val voiceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            if (!spoken.isNullOrBlank()) {
+                if (pendingVoiceField == "DESC") {
+                    description = spoken
+                } else {
+                    title = spoken
+                }
+            }
+        }
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak task details...")
+            }
+            try {
+                voiceLauncher.launch(intent)
+            } catch (_: Exception) {
+                Toast.makeText(context, "Voice Recognition unavailable", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "Microphone permission is required for voice input.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun launchVoiceInput(field: String) {
+        pendingVoiceField = field
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak task details...")
+            }
+            try {
+                voiceLauncher.launch(intent)
+            } catch (_: Exception) {
+                Toast.makeText(context, "Voice Recognition unavailable", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
     var dueDateMs by remember(existingTask) { mutableStateOf(existingTask?.dueDate) }
 
     // Google Maps Location & Geofence state
     var locationName by remember(existingTask) { mutableStateOf(existingTask?.locationName ?: "") }
     var latitude by remember(existingTask) { mutableStateOf(existingTask?.latitude) }
     var longitude by remember(existingTask) { mutableStateOf(existingTask?.longitude) }
-    var geofenceRadius by remember(existingTask) { mutableStateOf(existingTask?.geofenceRadius ?: 150f) }
+    var geofenceRadius by remember(existingTask) { mutableStateOf(existingTask?.geofenceRadius ?: 250f) }
+    var triggerDirection by remember(existingTask) { mutableStateOf(existingTask?.triggerDirection ?: "ARRIVAL") }
+    var isUserSelectedTriggerDirection by remember { mutableStateOf(existingTask != null) }
     var locationSearchQuery by remember(existingTask) { mutableStateOf(existingTask?.locationName ?: "") }
     var isFetchingCurrentLocation by remember { mutableStateOf(false) }
+
+    var showAddFrequentDialog by remember { mutableStateOf(false) }
+    var newFrequentName by remember { mutableStateOf("") }
+    var newFrequentAddress by remember { mutableStateOf("") }
+    var newFrequentCategory by remember { mutableStateOf("CUSTOM") }
+
+    // Dynamic Reactive Direction Trigger Auto-Detection (Only if user hasn't manually chosen)
+    LaunchedEffect(title, description, locationSearchQuery) {
+        if (!isUserSelectedTriggerDirection) {
+            val detected = GeminiTaskHelper.detectTriggerDirection("$title $description $locationSearchQuery")
+            if (detected == "DEPARTURE") {
+                triggerDirection = "DEPARTURE"
+            }
+        }
+    }
 
     val placeSuggestions by viewModel.placeSuggestions.collectAsState()
     val isSearchingPlaces by viewModel.isSearchingPlaces.collectAsState()
@@ -144,6 +225,7 @@ fun TaskFormScreen(
                                     latitude = latitude,
                                     longitude = longitude,
                                     geofenceRadius = geofenceRadius,
+                                    triggerDirection = triggerDirection,
                                     reminderTone = reminderTone
                                 )
                                 if (isEditing) {
@@ -182,6 +264,18 @@ fun TaskFormScreen(
                     onValueChange = { title = it },
                     label = { Text("Task Title *") },
                     placeholder = { Text("e.g., Prepare Quarterly Presentation") },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { launchVoiceInput("TITLE") },
+                            modifier = Modifier.testTag("task_title_mic_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Voice input for title",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -197,6 +291,18 @@ fun TaskFormScreen(
                     onValueChange = { description = it },
                     label = { Text("Description") },
                     placeholder = { Text("Add additional details or notes...") },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { launchVoiceInput("DESC") },
+                            modifier = Modifier.testTag("task_desc_mic_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Voice input for description",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    },
                     minLines = 3,
                     maxLines = 5,
                     modifier = Modifier
@@ -224,23 +330,32 @@ fun TaskFormScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            listOf("High", "Medium", "Low").forEach { p ->
+                            listOf(
+                                Triple("High", Color(0xFFD32F2F), Icons.Default.KeyboardDoubleArrowUp),
+                                Triple("Medium", Color(0xFFE65100), Icons.Default.KeyboardArrowUp),
+                                Triple("Low", Color(0xFF2E7D32), Icons.Default.KeyboardArrowDown)
+                            ).forEach { (p, color, icon) ->
                                 val selected = priority.equals(p, ignoreCase = true)
                                 FilterChip(
                                     selected = selected,
                                     onClick = { priority = p },
-                                    label = { Text(p) },
-                                    leadingIcon = if (selected) {
-                                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                    } else null,
+                                    label = { Text(p, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = icon,
+                                            contentDescription = "$p Priority",
+                                            tint = if (selected) color else MaterialTheme.colorScheme.outline,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
                                     modifier = Modifier
                                         .weight(1f)
                                         .testTag("priority_chip_${p.lowercase()}"),
                                     colors = FilterChipDefaults.filterChipColors(
                                         selectedContainerColor = when (p.lowercase()) {
-                                            "high" -> MaterialTheme.colorScheme.errorContainer
-                                            "medium" -> MaterialTheme.colorScheme.tertiaryContainer
-                                            else -> MaterialTheme.colorScheme.secondaryContainer
+                                            "high" -> Color(0xFFFFEBEE)
+                                            "medium" -> Color(0xFFFFF3E0)
+                                            else -> Color(0xFFE8F5E9)
                                         }
                                     )
                                 )
@@ -640,6 +755,11 @@ fun TaskFormScreen(
                             }
                         }
 
+                        // Auto-load Next Location Suggestions on screen open
+                        LaunchedEffect(Unit) {
+                            viewModel.searchPlacesAutocomplete(locationSearchQuery)
+                        }
+
                         // Search Input
                         OutlinedTextField(
                             value = locationSearchQuery,
@@ -649,10 +769,8 @@ fun TaskFormScreen(
                                     locationName = ""
                                     latitude = null
                                     longitude = null
-                                    viewModel.clearPlaceSuggestions()
-                                } else {
-                                    viewModel.searchPlacesAutocomplete(it)
                                 }
+                                viewModel.searchPlacesAutocomplete(it)
                             },
                             placeholder = { Text("Search location with Google Maps...") },
                             leadingIcon = {
@@ -693,20 +811,38 @@ fun TaskFormScreen(
                             shape = RoundedCornerShape(12.dp)
                         )
 
-                        // Frequent Places Quick Chips
-                        if (savedLocations.isNotEmpty()) {
-                            Column {
+                        // Frequent Places Quick Chips & Preset Buttons
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
                                     text = "Frequent Places:",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.SemiBold
                                 )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Row(
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                TextButton(
+                                    onClick = {
+                                        newFrequentName = locationName.ifBlank { locationSearchQuery }
+                                        newFrequentAddress = locationSearchQuery
+                                        showAddFrequentDialog = true
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text("+ Save Place", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (savedLocations.isNotEmpty()) {
                                     savedLocations.forEach { loc ->
                                         val isSelected = locationName.equals(loc.name, ignoreCase = true)
                                         FilterChip(
@@ -729,6 +865,31 @@ fun TaskFormScreen(
                                                 }
                                             },
                                             label = { Text("${loc.displayIcon} ${loc.name}", fontSize = 12.sp) }
+                                        )
+                                    }
+                                } else {
+                                    listOf(
+                                        Triple("Home", "🏠", "Home"),
+                                        Triple("Work", "💼", "Work"),
+                                        Triple("Gym", "🏋️", "Gym"),
+                                        Triple("Store", "🛒", "Grocery Store"),
+                                        Triple("Coffee", "☕", "Coffee Shop"),
+                                        Triple("School", "🏫", "School")
+                                    ).forEach { (presetName, icon, query) ->
+                                        FilterChip(
+                                            selected = locationName.equals(presetName, ignoreCase = true),
+                                            onClick = {
+                                                locationName = presetName
+                                                locationSearchQuery = query
+                                                coroutineScope.launch {
+                                                    val resolved = viewModel.resolveLocationCoordinates(query, fallbackToCurrentLocation = true)
+                                                    if (resolved != null) {
+                                                        latitude = resolved.second
+                                                        longitude = resolved.third
+                                                    }
+                                                }
+                                            },
+                                            label = { Text("$icon $presetName", fontSize = 12.sp) }
                                         )
                                     }
                                 }
@@ -806,55 +967,155 @@ fun TaskFormScreen(
                             }
                         }
 
-                        // Selected Location Badge
+                        // Selected Location Badge with Bookmark Option
                         if (latitude != null && longitude != null) {
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
                                     Row(
+                                        modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Icon(
-                                            Icons.Default.LocationOn,
-                                            contentDescription = null,
-                                            tint = Color(0xFF2E7D32),
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "${locationName.ifBlank { "Location" }} (${String.format(Locale.US, "%.4f, %.4f", latitude, longitude)})",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.Medium,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.LocationOn,
+                                                contentDescription = null,
+                                                tint = Color(0xFF2E7D32),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Column {
+                                                Text(
+                                                    text = locationName.ifBlank { "Selected Location" },
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                )
+                                                Text(
+                                                    text = String.format(Locale.US, "%.4f, %.4f", latitude, longitude),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                                )
+                                            }
+                                        }
+
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            val isAlreadySaved = savedLocations.any { it.name.equals(locationName, ignoreCase = true) }
+                                            if (!isAlreadySaved && locationName.isNotBlank()) {
+                                                IconButton(
+                                                    onClick = {
+                                                        viewModel.insertSavedLocation(
+                                                            com.example.data.SavedLocation(
+                                                                name = locationName,
+                                                                address = locationSearchQuery,
+                                                                latitude = latitude!!,
+                                                                longitude = longitude!!,
+                                                                radiusMeters = geofenceRadius
+                                                            )
+                                                        )
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.StarBorder,
+                                                        contentDescription = "Bookmark as Frequent Place",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    latitude = null
+                                                    longitude = null
+                                                    locationName = ""
+                                                    locationSearchQuery = ""
+                                                },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Clear,
+                                                    contentDescription = "Remove location",
+                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
                                     }
-                                    IconButton(
-                                        onClick = {
-                                            latitude = null
-                                            longitude = null
-                                            locationName = ""
-                                            locationSearchQuery = ""
-                                        },
-                                        modifier = Modifier.size(20.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Clear,
-                                            contentDescription = "Remove location",
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(14.dp)
+                                }
+                            }
+                        }
+
+                        // Interactive Geofence Trigger Mode Selector
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Trigger Event Mode",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    val triggerLabel = when (triggerDirection.uppercase()) {
+                                        "DEPARTURE" -> "🚪 On Departure / Leaving"
+                                        "PROXIMITY" -> "📡 When Approaching Near"
+                                        else -> "📍 On Arrival / Entering"
+                                    }
+                                    Text(
+                                        text = triggerLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    listOf(
+                                        Triple("ARRIVAL", "📍 Arrive", "Fires when you enter location area"),
+                                        Triple("DEPARTURE", "🚪 Leave", "Fires when you exit location area"),
+                                        Triple("PROXIMITY", "📡 Near", "Fires when nearby (300m)")
+                                    ).forEach { (modeKey, modeLabel, _) ->
+                                        val isSelected = triggerDirection.equals(modeKey, ignoreCase = true)
+                                        FilterChip(
+                                            selected = isSelected,
+                                            onClick = {
+                                                triggerDirection = modeKey
+                                                isUserSelectedTriggerDirection = true
+                                            },
+                                            label = { Text(modeLabel, style = MaterialTheme.typography.bodySmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
+                                            modifier = Modifier.weight(1f)
                                         )
                                     }
                                 }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = when (triggerDirection.uppercase()) {
+                                        "DEPARTURE" -> "🚪 Notification will trigger as soon as you leave/exit this location."
+                                        "PROXIMITY" -> "📡 Notification will trigger as soon as you approach near this location."
+                                        else -> "📍 Notification will trigger as soon as you arrive at this location."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -1043,6 +1304,82 @@ fun TaskFormScreen(
             text = {
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     TimePicker(state = timePickerState)
+                }
+            }
+        )
+    }
+
+    if (showAddFrequentDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddFrequentDialog = false },
+            title = { Text("Save Frequent Location") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = newFrequentName,
+                        onValueChange = { newFrequentName = it },
+                        label = { Text("Location Name (e.g. Home, Gym)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newFrequentAddress,
+                        onValueChange = { newFrequentAddress = it },
+                        label = { Text("Address / Google Maps Query") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("Category Preset:", style = MaterialTheme.typography.labelSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("HOME" to "🏠 Home", "WORK" to "💼 Work", "GYM" to "🏋️ Gym", "MARKET" to "🛒 Store", "SCHOOL" to "🏫 School", "CUSTOM" to "📍 Custom").forEach { (catKey, label) ->
+                            FilterChip(
+                                selected = newFrequentCategory == catKey,
+                                onClick = { newFrequentCategory = catKey },
+                                label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newFrequentName.isNotBlank()) {
+                            coroutineScope.launch {
+                                val query = newFrequentAddress.ifBlank { newFrequentName }
+                                val resolved = viewModel.resolveLocationCoordinates(query, fallbackToCurrentLocation = true)
+                                val lat = resolved?.second ?: latitude ?: 0.0
+                                val lng = resolved?.third ?: longitude ?: 0.0
+                                viewModel.insertSavedLocation(
+                                    com.example.data.SavedLocation(
+                                        name = newFrequentName.trim(),
+                                        address = query.trim(),
+                                        latitude = lat,
+                                        longitude = lng,
+                                        category = newFrequentCategory
+                                    )
+                                )
+                                locationName = newFrequentName.trim()
+                                locationSearchQuery = query.trim()
+                                if (lat != 0.0 || lng != 0.0) {
+                                    latitude = lat
+                                    longitude = lng
+                                }
+                                showAddFrequentDialog = false
+                            }
+                        }
+                    },
+                    enabled = newFrequentName.isNotBlank()
+                ) {
+                    Text("Save Location")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddFrequentDialog = false }) {
+                    Text("Cancel")
                 }
             }
         )

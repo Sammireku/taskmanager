@@ -3,13 +3,16 @@ package com.example.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,11 +25,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.FlightLand
 import androidx.compose.material.icons.filled.FlightTakeoff
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowUp
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.PriorityHigh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Circle
@@ -41,6 +49,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -112,8 +122,30 @@ fun TaskListItem(
     subtasksCount: String? = null
 ) {
     val isDone = task.isDone
-    val formattedDueDate = remember(task.dueDate) {
+    val formattedDueDate: String? = remember(task.dueDate) {
         task.dueDate?.let { formatTaskDueDate(it) }
+    }
+
+    val priorityLower = task.safePriority.lowercase(Locale.ROOT)
+    val priorityColor = when (priorityLower) {
+        "high" -> Color(0xFFD32F2F)
+        "low" -> Color(0xFF2E7D32)
+        else -> Color(0xFFE65100)
+    }
+    val priorityBgColor = when (priorityLower) {
+        "high" -> Color(0xFFFFEBEE)
+        "low" -> Color(0xFFE8F5E9)
+        else -> Color(0xFFFFF3E0)
+    }
+    val priorityIcon = when (priorityLower) {
+        "high" -> Icons.Default.KeyboardDoubleArrowUp
+        "low" -> Icons.Default.KeyboardArrowDown
+        else -> Icons.Default.KeyboardArrowUp
+    }
+    val priorityLabel = when (priorityLower) {
+        "high" -> "High"
+        "low" -> "Low"
+        else -> "Medium"
     }
 
     Card(
@@ -134,113 +166,136 @@ fun TaskListItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .height(IntrinsicSize.Min)
         ) {
-            // Completion Toggle Checkbox
-            IconButton(
-                onClick = onToggleComplete,
-                modifier = Modifier
-                    .size(48.dp)
-                    .testTag("task_checkbox_${task.id}")
-            ) {
-                Icon(
-                    imageVector = if (isDone) Icons.Default.CheckCircle else Icons.Outlined.Circle,
-                    contentDescription = if (isDone) "Mark ${task.safeTitle} as incomplete" else "Mark ${task.safeTitle} as complete",
-                    tint = if (isDone) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(24.dp)
+            if (!isDone && priorityLower == "high") {
+                Box(
+                    modifier = Modifier
+                        .width(5.dp)
+                        .fillMaxHeight()
+                        .background(
+                            color = Color(0xFFD32F2F),
+                            shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
+                        )
                 )
             }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                // Task Title
-                Text(
-                    text = task.safeTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (isDone) FontWeight.Normal else FontWeight.SemiBold,
-                    textDecoration = if (isDone) TextDecoration.LineThrough else TextDecoration.None,
-                    color = if (isDone) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.testTag("task_title_${task.id}")
-                )
-
-                // Optional Description
-                if (!task.description.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = task.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Completion Toggle Checkbox
+                IconButton(
+                    onClick = onToggleComplete,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("task_checkbox_${task.id}")
+                ) {
+                    Icon(
+                        imageVector = if (isDone) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                        contentDescription = if (isDone) "Mark ${task.safeTitle} as incomplete" else "Mark ${task.safeTitle} as complete",
+                        tint = if (isDone) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.width(6.dp))
 
-                // Metadata Row: Due Date, Priority, Category, Location, Subtasks
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    // Due Date Display (Prominent)
-                    if (formattedDueDate != null) {
+                Column(modifier = Modifier.weight(1f)) {
+                    // Task Title
+                    Text(
+                        text = task.safeTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = if (isDone) FontWeight.Normal else FontWeight.SemiBold,
+                        textDecoration = if (isDone) TextDecoration.LineThrough else TextDecoration.None,
+                        color = if (isDone) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("task_title_${task.id}")
+                    )
+
+                    // Optional Description
+                    if (!task.description.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = task.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Metadata Row: Due Date, Priority, Category, Location, Subtasks
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        // Due Date Display (Prominent)
+                        if (formattedDueDate != null) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.testTag("task_due_date_${task.id}")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Schedule,
+                                        contentDescription = "Due date",
+                                        modifier = Modifier.size(12.dp),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = formattedDueDate ?: "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        } else {
+                            // Unset due date indicator
+                            Text(
+                                text = "No due date",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.8f),
+                                modifier = Modifier.testTag("task_due_date_none_${task.id}")
+                            )
+                        }
+
+                        // Color-coded Visual Priority Badge
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            color = priorityBgColor,
                             shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.testTag("task_due_date_${task.id}")
+                            modifier = Modifier.testTag("task_priority_badge_${task.id}")
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Schedule,
-                                    contentDescription = "Due date",
-                                    modifier = Modifier.size(12.dp),
-                                    tint = MaterialTheme.colorScheme.primary
+                                    imageVector = priorityIcon,
+                                    contentDescription = "$priorityLabel Priority",
+                                    tint = priorityColor,
+                                    modifier = Modifier.size(13.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
                                 Text(
-                                    text = formattedDueDate,
+                                    text = priorityLabel,
                                     style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    fontWeight = FontWeight.Bold,
+                                    color = priorityColor
                                 )
                             }
                         }
-                    } else {
-                        // Unset due date indicator
-                        Text(
-                            text = "No due date",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.8f),
-                            modifier = Modifier.testTag("task_due_date_none_${task.id}")
-                        )
-                    }
-
-                    // Priority Badge
-                    val priorityColor = when (task.safePriority.lowercase(Locale.ROOT)) {
-                        "high" -> MaterialTheme.colorScheme.error
-                        "low" -> MaterialTheme.colorScheme.outline
-                        else -> MaterialTheme.colorScheme.tertiary
-                    }
-                    Surface(
-                        color = priorityColor.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(
-                            text = task.safePriority,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = priorityColor,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
 
                     // Category Pill
                     if (!task.category.isNullOrBlank()) {
@@ -272,44 +327,65 @@ fun TaskListItem(
                         }
                     }
 
-                    // Location indicator
-                    if (distanceText != null) {
+                    // Color-coded Location Trigger Visual Indicator Badge
+                    if (!task.locationName.isNullOrBlank() || task.latitude != null) {
+                        val triggerMode = task.safeTriggerDirection.uppercase(Locale.ROOT)
+                        val badgeStyle = when (triggerMode) {
+                            "DEPARTURE" -> LocationBadgeStyle(
+                                bg = Color(0xFFFFF3E0),
+                                fg = Color(0xFFD84315),
+                                icon = Icons.Default.FlightTakeoff,
+                                label = "🚪 Leave"
+                            )
+                            "PROXIMITY" -> LocationBadgeStyle(
+                                bg = Color(0xFFE3F2FD),
+                                fg = Color(0xFF1565C0),
+                                icon = Icons.Default.Schedule,
+                                label = "📡 Near"
+                            )
+                            else -> LocationBadgeStyle(
+                                bg = Color(0xFFE8F5E9),
+                                fg = Color(0xFF2E7D32),
+                                icon = Icons.Default.FlightLand,
+                                label = "📍 Arrive"
+                            )
+                        }
+
+                        val locationNameText = task.locationName?.trim()?.takeIf { it.isNotBlank() } ?: "Location"
+                        val displayText = if (distanceText != null) "${badgeStyle.label} $locationNameText ($distanceText)" else "${badgeStyle.label} $locationNameText"
+
                         Surface(
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-                            shape = RoundedCornerShape(8.dp)
+                            color = badgeStyle.bg,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("task_location_badge_${task.id}")
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
-                                val isDeparture = task.safeTriggerDirection.equals("DEPARTURE", ignoreCase = true)
                                 Icon(
-                                    imageVector = if (isDeparture) Icons.Default.FlightTakeoff else Icons.Default.FlightLand,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(11.dp),
-                                    tint = MaterialTheme.colorScheme.primary
+                                    imageVector = badgeStyle.icon,
+                                    contentDescription = "$triggerMode trigger for $locationNameText",
+                                    modifier = Modifier.size(12.dp),
+                                    tint = badgeStyle.fg
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
-                                    text = distanceText,
+                                    text = displayText,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    color = badgeStyle.fg,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
-                    } else if (!task.locationName.isNullOrBlank() || task.latitude != null) {
-                        Icon(
-                            imageVector = Icons.Default.LocationOn,
-                            contentDescription = "Location: ${task.locationName ?: ""}",
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(14.dp)
-                        )
                     }
                 }
             }
         }
     }
+}
 }
 
 /**
@@ -340,3 +416,11 @@ fun formatTaskDueDate(timestamp: Long): String {
         }
     }
 }
+
+private data class LocationBadgeStyle(
+    val bg: Color,
+    val fg: Color,
+    val icon: ImageVector,
+    val label: String
+)
+
